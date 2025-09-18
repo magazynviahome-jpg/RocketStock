@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # =========================
-# KONFIG / WYGLĄD (fiolet)
+# KONFIG / WYGLĄD – fiolet + drobny CSS
 # =========================
 st.set_page_config(
     page_title="RocketStock – NASDAQ Scanner",
@@ -18,28 +18,29 @@ st.set_page_config(
     layout="wide"
 )
 
-# Fioletowy akcent + lekkie poprawki UI (bez motywu w config.toml)
 st.markdown(
     """
     <style>
-    :root {
-      --primary-color: #7c3aed; /* fiolet */
-    }
+    /* przyciski */
     .stButton>button, .stDownloadButton>button {
       border-radius: 10px !important;
       font-weight: 600 !important;
     }
+    /* pigułki info */
     .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
-    .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper {
-      border-radius: 8px;
-    }
-    /* Ukryj tytuł i opis – nie renderujemy ich w ogóle w kodzie */
+    /* ag-grid wygładzony */
+    .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper { border-radius: 8px; }
+    /* dopraw checkbox/radio, gdyby motyw nie zadziałał */
+    input[type="checkbox"], input[type="radio"] { accent-color: #7c3aed; }
+    /* slider (fallback) */
+    div[role="slider"] .rc-slider-track { background: #7c3aed !important; }
+    div[role="slider"] .rc-slider-handle { border-color: #7c3aed !important; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# (Na Twoją prośbę: brak st.title / st.caption – czysto na górze)
+# (na Twoją prośbę – brak st.title/st.caption u góry)
 
 # =========================
 # STAŁE / CACHE
@@ -164,20 +165,14 @@ def vol_confirmation(volume, avg_volume, require: bool) -> bool:
 def diamond_rank(di: str) -> int:
     return 0 if di == "–" else len(di)
 
-# Opis wolumenu (używane do tabeli, po przypisaniu kwantyli)
+# Opis wolumenu (po przypisaniu kwantyli)
 def volume_label_from_ratio_qtile(q) -> str:
-    if pd.isna(q):
-        return "—"
-    if q >= 0.80:
-        return "Bardzo wysoki"
-    elif q >= 0.60:
-        return "Wysoki"
-    elif q >= 0.40:
-        return "Normalny"
-    elif q >= 0.20:
-        return "Niski"
-    else:
-        return "Bardzo niski"
+    if pd.isna(q): return "—"
+    if q >= 0.80:  return "Bardzo wysoki"
+    if q >= 0.60:  return "Wysoki"
+    if q >= 0.40:  return "Normalny"
+    if q >= 0.20:  return "Niski"
+    return "Bardzo niski"
 
 # =========================
 # WYKRESY (Plotly) — tylko prezentacja
@@ -189,9 +184,7 @@ def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
         x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"],
         name=ticker, showlegend=False
     ))
-    fig.add_trace(go.Scatter(
-        x=d.index, y=d["EMA200"], name="EMA200", mode="lines"
-    ))
+    fig.add_trace(go.Scatter(x=d.index, y=d["EMA200"], name="EMA200", mode="lines"))
     fig.update_layout(
         height=460, margin=dict(l=10, r=10, t=40, b=10),
         title=f"{ticker} — Świece + EMA200", xaxis_rangeslider_visible=False
@@ -207,6 +200,18 @@ def plot_rsi(df: pd.DataFrame, ticker: str, bars: int = 180):
     fig.update_layout(
         height=240, margin=dict(l=10, r=10, t=40, b=10),
         title=f"{ticker} — RSI(14)", yaxis=dict(range=[0, 100])
+    )
+    return fig
+
+def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
+    d = df.tail(bars)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=d.index, y=d["MACD"], name="MACD", mode="lines"))
+    fig.add_trace(go.Scatter(x=d.index, y=d["MACD_signal"], name="Signal", mode="lines"))
+    fig.add_hline(y=0, line_dash="dash")
+    fig.update_layout(
+        height=240, margin=dict(l=10, r=10, t=40, b=10),
+        title=f"{ticker} — MACD", showlegend=True
     )
     return fig
 
@@ -266,7 +271,7 @@ if run_scan:
                     macd_cross, vol_ok, signal_mode, rsi_min, rsi_max
                 )
 
-                # zapisz też ratio do późniejszej klasyfikacji „Bardzo wysoki …”
+                # ratio do klasyfikacji wolumenu
                 vol_ratio = None
                 if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and last.get("AvgVolume") > 0:
                     vol_ratio = float(last.get("Volume")) / float(last.get("AvgVolume"))
@@ -292,28 +297,20 @@ if run_scan:
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # 1) Usuń 1-diamentowe z widoku ZAWSZE (Twoje życzenie)
+    # 1) usuń 1-diamentowe z widoku (zostaw 💎💎, 💎💎💎 i „–”)
     df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])]
 
-    # 2) Jeśli zaznaczono „tylko 💎💎💎” – filtruj
-    if 'only_three' in st.session_state or True:
-        # (użyj zmiennej ze scope'u sidebaru)
-        pass
-    # (prosty warunek – bezpośrednio)
-    # Tu korzystamy z wartości only_three z sidebaru
-    if 'only_three' in locals() and only_three:
+    # 2) „tylko 💎💎💎”, jeśli zaznaczono
+    if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
-    # 3) Klasy wolumenu oparte o KWANTYLE z aktualnych wyników
-    #    VolRatio może mieć None → ignorujemy przy liczeniu quantyli
+    # 3) klasy wolumenu wg kwantyli aktualnych wyników
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
-        # percentrank (0..1) – ranga względem innych
         qtiles = ratio_series.rank(pct=True)
         df_res["VolRankPct"] = qtiles
         df_res["Wolumen"] = df_res["VolRankPct"].apply(volume_label_from_ratio_qtile)
     else:
-        # fallback: bez rankingu (opis względny po progach absolutnych)
         def _label_fallback(row):
             v, a = row.get("Volume"), row.get("AvgVolume")
             if pd.isna(v) or pd.isna(a) or a <= 0:
@@ -326,32 +323,29 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_label_fallback, axis=1)
 
-    # 4) Filtr wolumenu wg wybranej kategorii
-    if 'vol_filter' in locals() and vol_filter != "Wszystkie":
+    # 4) filtr wolumenu (jeśli wybrano)
+    if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
-    # 5) Kolumny do widoku
+    # 5) kolumny do widoku
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen"]
 
-    # 6) Sort wg siły sygnału (💎💎💎 > 💎💎 > –) i alfabet
+    # 6) sort wg siły sygnału (💎💎💎 > 💎💎 > –) i alfabet
     def _rank(di: str) -> int:
         return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
     df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"])
 
+    # ======= TABELA Z PAGINACJĄ (widoczne strony) =======
     st.subheader("📋 Wyniki skanera")
-    st.write(
-        f"<span class='pill'>Wyników: <b>{len(df_res)}</b></span>"
-        f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
-        f"<span class='pill'>Okres: <b>{period}</b></span>"
-        f"<span class='pill'>RSI: <b>{rsi_min}–{rsi_max}</b></span>",
-        unsafe_allow_html=True
-    )
 
-    # -------- AgGrid: kliknij wiersz, wybierz spółkę --------
+    # wybór rozmiaru strony (UX – nie zmienia logiki)
+    page_size = st.selectbox("Wierszy na stronę", [10, 25, 50, 100], index=1, key="pagesize")
+
     gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
     gb.configure_selection('single', use_checkbox=False)
-    gb.configure_pagination(paginationAutoPageSize=True)
+    # WAŻNE: pokaż panel paginacji; ustaw rozmiar strony
+    gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size)
     gb.configure_grid_options(rowHeight=36)
     grid_options = gb.build()
 
@@ -364,7 +358,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         fit_columns_on_grid_load=True,
     )
 
-    # --- bezpieczny odbiór zaznaczenia ---
+    # bezpieczny odbiór zaznaczenia
     selected_row = None
     selected_rows = []
     if isinstance(grid_response, dict):
@@ -392,7 +386,6 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
             dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
             m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
-            # policz diamenty dla wybranej (ta sama logika)
             macd_cross = macd_bullish_cross_recent(df_sel, macd_lookback)
             vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
             di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
@@ -401,6 +394,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
 
             st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
             st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
+            st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
 
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
