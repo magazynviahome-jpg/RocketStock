@@ -1,7 +1,9 @@
-streamlit>=1.33
-yfinance
-pandas
-ta
-requests
-plotly
-streamlit-aggrid==0.3.4.post3
+python>=3.10
+streamlit==1.32.2
+st-aggrid==0.3.4.post3
+pandas==2.2.2
+numpy==1.26.4
+yfinance==0.2.43
+ta==0.11.0
+plotly==5.22.0
+requests==2.32.3
