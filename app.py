@@ -202,6 +202,8 @@ def plot_rsi(df: pd.DataFrame, ticker: str, bars: int = 180):
 def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
     fig = go.Figure()
+    fig.add_trace(go.Candlestick())  # placeholder to keep consistent theme (optional)
+    fig.data = []  # clear
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD"], name="MACD", mode="lines"))
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD_signal"], name="Signal", mode="lines"))
     fig.add_trace(go.Bar(x=d.index, y=df.tail(bars)["MACD_hist"], name="Histogram", opacity=0.3))
@@ -233,7 +235,7 @@ with st.sidebar:
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
     with st.expander("Dodatkowe filtry (opcjonalne)", expanded=False):
-        # wszystkie odznaczone domyślnie
+        # domyślnie wszystko OFF
         f_maxdist_on = st.checkbox("Max dystans do EMA200", value=False)
         f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
         f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
@@ -516,7 +518,7 @@ if run_scan:
                 if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume")) > 0:
                     vr_val = float(last.get("Volume")) / float(last.get("AvgVolume"))
                 if f_vr_on and vr_val is not None:
-                    vr_ok = (vr_val >= float(f_vr_min)) and (vr_val <= float(f_vr_max))
+                    vr_ok = (vr_val >= float(f_vr_min)) and (vr_ok := (vr_val <= float(f_vr_max)))
 
                 minprice_ok = True
                 if f_minprice_on and pd.notna(last.get("Close")):
@@ -574,7 +576,7 @@ if run_scan:
             if not prev_symbol:
                 st.session_state["selected_symbol"] = None
                 st.session_state["selection_source"] = None
-        # nie resetuj last_table_selected — to pomaga wykryć "nowy" klik
+        # NIE resetuj last_table_selected – to pomaga wykryć „nowy” klik
 
 # =========================
 # RANKING (bez AI)
@@ -727,7 +729,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         else:
             st.write("Dividend: **N/A**")
 
-    # --- NEW: Short interest (Yahoo) ---
+    # --- Short interest (Yahoo) ---
     with st.expander("📉 Short interest (Yahoo)", expanded=False):
         ss = fn.get("shares_short")
         spf = fn.get("short_percent_float")
@@ -764,7 +766,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # Klasy wolumenu
+    # 1) Klasy wolumenu -> zawsze na początku
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -782,11 +784,15 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
-    # Filtr wolumenu (widok)
+    # 2) Filtr wolumenu (widok)
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
-    # ===== RANKING =====
+    # 3) „Pokaż tylko 💎💎💎” – na tym samym df_res co tabela i licznik
+    if only_three:
+        df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
+
+    # ===== RANKING (liczony na pełnych wynikach skanu, jak wcześniej) =====
     if enable_rank:
         rank_df = build_ranking(st.session_state.scan_results, rsi_min, rsi_max, top_n)
         st.session_state.rank_df = rank_df
@@ -808,16 +814,13 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     # ===== TABELA =====
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
 
-    # „Pokaż tylko 💎💎💎” – stosujemy TUŻ przed tabelą (widok)
-    if only_three:
-        df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
-
-    # porządek i sort
-    df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])].reset_index(drop=True)
+    # porządek i sort do widoku
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
-    df_res["Rank"] = df_res["Sygnał"].apply(_rank)
-    df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
+    if not df_res.empty:
+        df_res["Rank"] = df_res["Sygnał"].apply(_rank)
+        df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
 
+    # licznik = dokładnie to, co trafi do tabeli
     st.subheader("📋 Wyniki skanera")
     st.write(
         f"<span class='pill'>Wyników: <b>{len(df_res)}</b></span>"
@@ -828,24 +831,33 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         unsafe_allow_html=True
     )
 
-    grid_key = "scan_table_aggrid"
+    # >>> NEW: dynamiczny key żeby wymusić rerender po filtrach
+    tick_tuple = tuple(df_res["Ticker"].tolist()) if not df_res.empty else ()
+    grid_key = f"grid_{only_three}_{vol_filter}_{len(df_res)}_{abs(hash(tick_tuple))%10000}"
 
-    gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
+    gb = GridOptionsBuilder.from_dataframe(df_res[view_cols] if not df_res.empty else pd.DataFrame(columns=view_cols))
     gb.configure_selection('single', use_checkbox=False)
     gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')
     grid_options = gb.build()
 
     grid_response = AgGrid(
-        df_res[view_cols],
+        df_res[view_cols] if not df_res.empty else pd.DataFrame(columns=view_cols),
         gridOptions=grid_options,
-        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.MODEL_CHANGED,  # <<< ważne
         theme='alpine',
         height=table_height,
         fit_columns_on_grid_load=bool(fit_cols),
         key=grid_key,
     )
 
-    # Odczyt selekcji z tabeli: PRZEKAŻEMY GŁOS TYLKO PRZY NOWEJ SELEKCJI
+    # jeżeli wybrany ticker zniknął po filtrach – wyczyść selekcję (zapobiega „pustce”)
+    visible_tickers = set(df_res["Ticker"]) if not df_res.empty else set()
+    if st.session_state.get("selected_symbol") and st.session_state["selected_symbol"] not in visible_tickers and st.session_state.get("selection_source") == "table":
+        st.session_state["selected_symbol"] = None
+        st.session_state["last_table_selected"] = None
+        st.session_state["selection_source"] = None
+
+    # Odczyt selekcji z tabeli: przejmij ster TYLKO przy nowym wyborze
     current_table_select = None
     if isinstance(grid_response, dict):
         sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
@@ -856,12 +868,10 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         if sel:
             current_table_select = sel[0]["Ticker"]
 
-    # przełącz na tabelę TYLKO, gdy wybór się zmienił
     if current_table_select and current_table_select != st.session_state.get("last_table_selected"):
         st.session_state["last_table_selected"] = current_table_select
         st.session_state["selected_symbol"] = current_table_select
         st.session_state["selection_source"] = "table"
-    # w innym wypadku – nie nadpisuj wyboru z rankingu
 
     # -------- WYKRESY + PODSUMOWANIE PRO --------
     sym = st.session_state.get("selected_symbol")
