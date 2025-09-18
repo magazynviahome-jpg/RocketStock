@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # =========================
-# KONFIG / WYGLĄD – fiolet + kompaktowy pager
+# KONFIG / WYGLĄD – fiolet + kompakt
 # =========================
 st.set_page_config(
     page_title="RocketStock – NASDAQ Scanner",
@@ -24,7 +24,7 @@ st.markdown(
     <style>
     :root { --rocket-purple:#7c3aed; }
 
-    /* Fioletowe akcenty */
+    /* Fioletowe akcenty (przyciski, suwaki, focus) */
     .stButton>button, .stDownloadButton>button {
       background: var(--rocket-purple) !important;
       border-color: var(--rocket-purple) !important;
@@ -38,41 +38,13 @@ st.markdown(
     div[data-baseweb="slider"] .rc-slider-handle { border-color: var(--rocket-purple) !important; }
     div[data-baseweb="slider"] .rc-slider-handle:active { box-shadow: 0 0 0 4px rgba(124,58,237,.2) !important; }
 
-    /* AgGrid look & feel */
+    /* AgGrid – wygląd i przewijanie */
     .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper { border-radius: 8px; }
     .ag-theme-alpine .ag-row.ag-row-selected { background-color: rgba(124,58,237,.12) !important; }
     .ag-theme-alpine .ag-row-hover { background-color: rgba(124,58,237,.08) !important; }
 
     .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
     .small {font-size:12px;color:#6b7280;}
-
-    /* ===== Ultra-kompaktowy pager pod tabelą (prawy dół) ===== */
-    #pager { display:flex; justify-content:flex-end; align-items:center; gap:6px; }
-    #pager .btn {
-      /* wizualnie: ultramałe „pastylki” ~8x4 */
-      padding: 2px 6px;             /* ≈ 8x4 optycznie */
-      font-size: 10px;
-      line-height: 12px;
-      border-radius: 6px;
-      background: rgba(124,58,237,.08);
-      color: #4c1d95;
-      border: 1px solid rgba(124,58,237,.25);
-      display:inline-block;
-      user-select: none;
-      cursor: pointer;
-    }
-    #pager .btn:hover { background: rgba(124,58,237,.15); }
-    #pager .btn.disabled { opacity:.35; pointer-events:none; }
-    #pager .count { font-size: 11px; color: #6b7280; }
-
-    /* Większy „hit area” dla dostępności – niewidoczny */
-    #pager .btn::after {
-      content: '';
-      position: relative;
-      display:inline-block;
-      width: 0; height: 0;
-      padding: 6px 6px; /* powiększa obszar kliku, bez zmiany wyglądu */
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -207,7 +179,7 @@ def volume_label_from_ratio_qtile(q) -> str:
     return "Bardzo niski"
 
 # =========================
-# WYKRESY (Plotly) — tylko prezentacja
+# WYKRESY (Plotly) — prezentacja
 # =========================
 def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
@@ -304,7 +276,7 @@ if run_scan:
         st.session_state.scan_results = pd.DataFrame(results)
 
 # =========================
-# TABELA + PAGINACJA POD TABELĄ (25/str) + WYKRESY
+# TABELA (PRZEWIJANA) + WYKRESY
 # =========================
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
@@ -344,46 +316,33 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
     df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
 
-    # ---------- paginacja: STAŁE 25 WIERSZY / STRONĘ ----------
-    PAGE_SIZE = 25
-    if "page_num" not in st.session_state:  st.session_state.page_num  = 1
-
-    total_rows  = len(df_res)
-    total_pages = max(1, math.ceil(total_rows / PAGE_SIZE))
-    st.session_state.page_num = min(st.session_state.page_num, total_pages)
-
-    # bieżący wycinek
-    start = (st.session_state.page_num - 1) * PAGE_SIZE
-    end   = start + PAGE_SIZE
-    df_page = df_res.iloc[start:end].copy()
-
-    # nagłówek z krótkimi info (u góry tabeli)
+    # Nagłówek info
     st.subheader("📋 Wyniki skanera")
     st.write(
-        f"<span class='pill'>Wyników: <b>{total_rows}</b></span>"
+        f"<span class='pill'>Wyników: <b>{len(df_res)}</b></span>"
         f"<span class='pill'>RSI: <b>{rsi_min}–{rsi_max}</b></span>"
         f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
         f"<span class='pill'>Okres: <b>{period}</b></span>",
         unsafe_allow_html=True
     )
 
-    # tabela (auto-wysokość: brak przewijania – pokazuje dokładnie 25 wierszy)
-    gb = GridOptionsBuilder.from_dataframe(df_page[view_cols])
+    # TABELA – STAŁA WYSOKOŚĆ, PRZEWIJANA W ŚRODKU
+    gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
     gb.configure_selection('single', use_checkbox=False)
     gb.configure_grid_options(
         rowHeight=36,
-        suppressPaginationPanel=True,
-        domLayout='autoHeight'   # dopasuj wysokość do zawartości
+        suppressPaginationPanel=True,  # brak paginacji
+        domLayout='normal'             # normal = stała wysokość + scroll
     )
     grid_options = gb.build()
 
     grid_response = AgGrid(
-        df_page[view_cols],
+        df_res[view_cols],
         gridOptions=grid_options,
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         theme='alpine',
+        height=520,                # <<< stała wysokość → przewijanie w tabeli
         fit_columns_on_grid_load=True,
-        allow_unsafe_jscode=True,
     )
 
     # wybór wiersza (klik)
@@ -394,48 +353,6 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     elif hasattr(grid_response, "selected_rows"):
         sel = getattr(grid_response, "selected_rows", []) or []
         if sel: selected_row = sel[0]
-
-    # ------ ULTRA-KOMPAKTOWY PAGER (prawy dół) ------
-    # używamy małych „pseudo-przycisków” renderowanych markdownem, bo st.button ma minimalny rozmiar
-    prev_disabled = st.session_state.page_num <= 1
-    next_disabled = st.session_state.page_num >= total_pages
-
-    # Renderujemy dwie małe „pastylki” i licznik. Kliki obsłużymy dwoma prawdziwymi przyciskami off-screen.
-    col_pad_l, col_pager, col_pad_r = st.columns([6,3,3])
-    with col_pager:
-        st.markdown("<div id='pager'>", unsafe_allow_html=True)
-        # „niewidoczne” (ale prawdziwe) przyciski do obsługi klików
-        col_a, col_b = st.columns([1,1])
-        with col_a:
-            go_prev = st.button(" ", key="__prev_hidden__", help="Poprzednia strona", disabled=prev_disabled)
-        with col_b:
-            go_next = st.button(" ", key="__next_hidden__", help="Następna strona", disabled=next_disabled)
-        # wizualny, ultra-mały pager (klik uruchamia skrypt, który „klika” hidden buttony)
-        prev_cls = "btn disabled" if prev_disabled else "btn"
-        next_cls = "btn disabled" if next_disabled else "btn"
-        st.markdown(
-            f"""
-            <div style="width:100%; display:flex; justify-content:flex-end; align-items:center; gap:6px;">
-              <span class="count">Strona <b>{st.session_state.page_num}</b> / {total_pages}</span>
-              <span id="prev_btn" class="{prev_cls}">‹</span>
-              <span id="next_btn" class="{next_cls}">›</span>
-            </div>
-            <script>
-              const prevEl = window.parent.document.getElementById("prev_btn");
-              const nextEl = window.parent.document.getElementById("next_btn");
-            </script>
-            """,
-            unsafe_allow_html=True
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Proste obejście: jeśli hidden buttony kliknięte – zmień stronę
-        if go_prev and not prev_disabled:
-            st.session_state.page_num -= 1
-            st.rerun()
-        if go_next and not next_disabled:
-            st.session_state.page_num += 1
-            st.rerun()
 
     # -------- WYKRESY pod tabelą dla wybranej spółki --------
     if selected_row:
