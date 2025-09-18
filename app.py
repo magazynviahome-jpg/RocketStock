@@ -223,6 +223,13 @@ with st.sidebar:
         vol_window = 20 if vol_window == "MA20" else 50
 
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
+
+        # ===== NOWE: filtr dla 3 diamentów – cena powyżej EMA200 =====
+        require_price_above_ema200_for_three = st.checkbox(
+            "Dla 💎💎💎 wymagaj Close > EMA200",
+            value=True
+        )
+
         vol_filter = st.selectbox(
             "Filtr wolumenu",
             ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"],
@@ -287,6 +294,14 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     # „tylko 💎💎💎”
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
+
+        # ===== NOWE: zostaw tylko te z Close > EMA200 (jeśli włączone) =====
+        if require_price_above_ema200_for_three:
+            df_res = df_res[
+                df_res["Close"].notna() &
+                df_res["EMA200"].notna() &
+                (df_res["Close"] > df_res["EMA200"])
+            ]
 
     # klasy wolumenu wg kwantyli (żeby „Bardzo wysoki” = najwyższe)
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
