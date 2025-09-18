@@ -7,6 +7,7 @@ import streamlit as st
 import yfinance as yf
 import ta
 import plotly.graph_objects as go
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # =========================
 # USTAWIENIA I WYGLĄD
@@ -22,7 +23,6 @@ st.markdown(
     <style>
     .muted {color:#6b7280;}
     .pill {padding:2px 8px;border-radius:999px;background:#f3f4f6;margin-right:6px;}
-    .grid-buttons .stButton>button{height:54px;font-size:14px;line-height:1.1;padding:8px 10px;margin-bottom:6px}
     </style>
     """,
     unsafe_allow_html=True,
@@ -84,7 +84,7 @@ def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
-    """LOGIKA BEZ ZMIAN: RSI, EMA200, MACD, średni wolumen."""
+    """RSI, EMA200, MACD, średni wolumen (LOGIKA BEZ ZMIAN)."""
     if "Close" not in df.columns or "Volume" not in df.columns:
         raise ValueError("Dane muszą zawierać 'Close' i 'Volume'.")
     df["RSI"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
@@ -154,8 +154,24 @@ def vol_confirmation(volume, avg_volume, require: bool) -> bool:
 def diamond_rank(di: str) -> int:
     return 0 if di == "–" else len(di)
 
+def volume_label(volume, avg_volume) -> str:
+    """Opis wolumenu zamiast liczby."""
+    if pd.isna(volume) or pd.isna(avg_volume) or avg_volume <= 0:
+        return "—"
+    ratio = float(volume) / float(avg_volume)
+    if ratio > 2.0:
+        return "Bardzo wysoki"
+    elif ratio > 1.5:
+        return "Wysoki"
+    elif ratio > 1.0:
+        return "Normalny"
+    elif ratio > 0.5:
+        return "Niski"
+    else:
+        return "Bardzo niski"
+
 # =========================
-# WYKRESY (Plotly) — tylko prezentacja, logika bez zmian
+# WYKRESY (Plotly) — tylko prezentacja
 # =========================
 def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
@@ -177,7 +193,6 @@ def plot_rsi(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=d.index, y=d["RSI"], name="RSI(14)", mode="lines"))
-    # poziomy referencyjne
     fig.add_hline(y=30, line_dash="dash")
     fig.add_hline(y=70, line_dash="dash")
     fig.update_layout(
@@ -202,15 +217,13 @@ with st.sidebar:
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 3500, 300, step=50)
 
         st.markdown("---")
-        # przeniesione na dół
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)  # domyślnie 1y
 
-        # przycisk URUCHOM SKANER
         run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
 # =========================
-# URUCHOMIENIE SKANU → WYNIKI → WYBÓR SPÓŁKI → WYKRESY
+# URUCHOMIENIE SKANU → TABELA (klik) → WYKRESY POD TABELĄ
 # =========================
 if run_scan:
     tickers_df = get_tickers(source)
@@ -241,17 +254,22 @@ if run_scan:
                     "MACD": round(float(last.get("MACD")), 4) if pd.notna(last.get("MACD")) else None,
                     "MACD_signal": round(float(last.get("MACD_signal")), 4) if pd.notna(last.get("MACD_signal")) else None,
                     "Volume": int(last.get("Volume")) if pd.notna(last.get("Volume")) else None,
+                    "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
                     "Sygnał": di
                 })
             progress.progress(i/len(tickers_list))
 
         status.write("✅ Zakończono skan.")
-        # zapisz w sesji
         st.session_state.scan_results = pd.DataFrame(results)
 
-# Sekcja wyników (jeśli są w sesji)
-if "scan_results" in st.session_state:
+# Sekcja wyników
+if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
+
+    # opis wolumenu (zamiast liczby)
+    df_res["Wolumen"] = df_res.apply(lambda r: volume_label(r.get("Volume"), r.get("AvgVolume")), axis=1)
+    # porządek kolumn do prezentacji
+    view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen"]
 
     # filtr widoku — tylko sygnały czy wszystko
     if show_only_signals:
@@ -269,49 +287,53 @@ if "scan_results" in st.session_state:
         f"<span class='pill'>RSI: <b>{rsi_min}–{rsi_max}</b></span>",
         unsafe_allow_html=True
     )
-    st.dataframe(df_res, use_container_width=True)
 
-    # Szybki wybór spółki → wykresy
-    st.markdown("### 💎 Wybierz spółkę do podglądu wykresów")
-    symbols = df_res["Ticker"].tolist()
-    if symbols:
-        # siatka przycisków
-        cols = st.columns(6)
-        selected_symbol = None
-        for i, sym in enumerate(symbols):
-            if cols[i % 6].button(sym):
-                selected_symbol = sym
+    # -------- AgGrid: kliknij wiersz, wybierz spółkę --------
+    gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
+    gb.configure_selection('single', use_checkbox=False)  # pojedynczy wybór po kliknięciu
+    gb.configure_pagination(paginationAutoPageSize=True)
+    gb.configure_grid_options(rowHeight=36)
+    grid_options = gb.build()
 
-        # jeśli kliknięto, pokaż wykresy (Plotly)
-        if selected_symbol:
-            with st.spinner(f"Ładuję wykresy dla {selected_symbol}…"):
-                df_sel = get_stock_df(selected_symbol, period=period, vol_window=vol_window)
-            if df_sel is None or df_sel.empty:
-                st.error("Nie udało się pobrać danych wykresu.")
-            else:
-                last = df_sel.iloc[-1]
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
-                m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
-                dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
-                m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
-                # policz diamenty dla wybranej (ta sama logika)
-                macd_cross = macd_bullish_cross_recent(df_sel, macd_lookback)
-                vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
-                di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                                    macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
-                m4.metric("Sygnał", di)
+    grid_response = AgGrid(
+        df_res[view_cols],
+        gridOptions=grid_options,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        theme='alpine',
+        height=420,
+        fit_columns_on_grid_load=True,
+    )
 
-                st.plotly_chart(plot_candles_with_ema(df_sel, selected_symbol), use_container_width=True)
-                st.plotly_chart(plot_rsi(df_sel, selected_symbol), use_container_width=True)
+    selected_row = None
+    if grid_response and grid_response.get("selected_rows"):
+        selected_row = grid_response["selected_rows"][0]  # dict z danymi wiersza
 
-                # mała tabela pod wykresami
-                with st.expander("Pokaż tabelę wskaźników (ostatnie 15 d.):", expanded=False):
-                    st.dataframe(
-                        df_sel[["Close","RSI","EMA200","MACD","MACD_signal","Volume","AvgVolume"]].tail(15),
-                        use_container_width=True
-                    )
-    else:
-        st.info("Brak spółek do wyboru przy obecnych filtrach.")
+    # -------- Wykresy pod tabelą dla wybranej spółki --------
+    if selected_row:
+        sym = selected_row["Ticker"]
+        st.markdown("---")
+        st.subheader(f"📈 {sym} — podgląd wykresów")
+
+        with st.spinner(f"Ładuję wykresy dla {sym}…"):
+            df_sel = get_stock_df(sym, period=period, vol_window=vol_window)
+
+        if df_sel is None or df_sel.empty:
+            st.error("Nie udało się pobrać danych wykresu.")
+        else:
+            last = df_sel.iloc[-1]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
+            m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
+            dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
+            m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
+            # policz diamenty dla wybranej (ta sama logika)
+            macd_cross = macd_bullish_cross_recent(df_sel, macd_lookback)
+            vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
+            di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                                macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
+            m4.metric("Sygnał", di)
+
+            st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
+            st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
 else:
     st.info("Kliknij **🚀 Uruchom skaner** w panelu bocznym, aby rozpocząć.")
