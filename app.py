@@ -12,7 +12,11 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 # =========================
 # USTAWIENIA I WYGLĄD
 # =========================
-
+st.set_page_config(
+    page_title="🚀 RocketStock – NASDAQ Scanner",
+    page_icon="🚀",
+    layout="wide"
+)
 
 st.markdown(
     """
