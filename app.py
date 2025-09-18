@@ -227,7 +227,6 @@ with st.sidebar:
         require_price_above_ema200 = st.checkbox("Wymagaj Close > EMA200", value=True)
 
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"], index=0)
-        # <<< podniesiony limit
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
         st.markdown("---")
@@ -235,18 +234,17 @@ with st.sidebar:
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
     with st.expander("Dodatkowe filtry (opcjonalne)", expanded=False):
-        # Wszystkie domyślnie OFF (zgodnie z prośbą)
+        # Wszystkie domyślnie OFF
         # Trend / impet
         f_maxdist_on = st.checkbox("Max dystans do EMA200", value=False)
         f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
         f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
         f_align_on = st.checkbox("Zgranie średnich: Close > EMA50 > EMA200", value=False)
+        # ZOSTAWIAMY tylko checkbox MACD świeży (bez pól liczbowych)
         f_macd_fresh_on = st.checkbox("MACD świeży: cross w N dniach + histogram rośnie", value=False)
-        colA, colB = st.columns(2)
-        with colA:
-            f_macd_fresh_look = st.number_input("— N dni (cross)", 1, 10, 3)
-        with colB:
-            f_macd_hist_up_days = st.number_input("— Min. dni wzrostu histogramu", 1, 5, 1)
+        # stałe domyślne (po usunięciu pól)
+        f_macd_fresh_look = 3
+        f_macd_hist_up_days = 1
         f_rsi_up_on = st.checkbox("RSI dziś ≥ RSI wczoraj", value=False)
 
         st.markdown("---")
@@ -290,7 +288,7 @@ with st.sidebar:
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
-# zapamiętaj parametry (dla wyliczeń wejścia)
+# zapamiętaj parametry (dla wejść)
 st.session_state["period"] = period
 st.session_state["vol_window"] = vol_window
 
@@ -319,7 +317,7 @@ if run_scan:
         for i, t in enumerate(tickers_list, start=1):
             status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
 
-            # — Filtr kapitalizacji (opcjonalnie, przed drogimi obliczeniami technicznymi) —
+            # Filtr MC (opcjonalnie, przed drogimi obliczeniami)
             if f_mcap_on:
                 mc = get_market_cap_fast(t)
                 if mc is None or not (f_mcap_min <= mc <= f_mcap_max):
@@ -331,7 +329,6 @@ if run_scan:
             if df is not None and not df.empty:
                 last = df.iloc[-1]
 
-                # Twarda bramka: RSI + (opcjonalnie) Close>EMA200
                 rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
                 price_ok = True
                 if require_price_above_ema200:
@@ -345,7 +342,7 @@ if run_scan:
                     di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                         macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
-                # Dodatkowe filtry (domyślnie OFF)
+                # Dodatkowe filtry
                 gap_ok = True
                 if f_gap_on and pd.notna(last.get("GapUpPct")):
                     gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
@@ -401,7 +398,6 @@ if run_scan:
                 if f_resist_on and pd.notna(last.get("RoomToHighPct")):
                     resist_ok = (float(last.get("RoomToHighPct")) >= float(f_resist_min))
 
-                # Kapitalizacja (jeśli ON): już przefiltrowane wyżej; dodaj flagę dla spójności
                 mcap_ok = True if not f_mcap_on else (mc is not None and (f_mcap_min <= mc <= f_mcap_max))
 
                 passed_all_filters = all([
@@ -409,7 +405,6 @@ if run_scan:
                     minavg_ok, vr_ok, minprice_ok, atr_ok, hhhl_ok, resist_ok, mcap_ok
                 ])
 
-                # Zapisz wynik
                 results.append({
                     "Ticker": t,
                     "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
@@ -801,7 +796,6 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         unsafe_allow_html=True
     )
 
-    # Stały key zmniejsza ryzyko "unregistered ComponentInstance"
     gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
     gb.configure_selection('single', use_checkbox=False)
     gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')
