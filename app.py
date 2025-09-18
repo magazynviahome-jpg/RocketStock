@@ -115,11 +115,8 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> pd.DataFrame | No
 
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
     """Konwersja warunków → diamenty, z 3 czułościami."""
-    # bazowe punkty
     pts = 0
-    # TRYBY
     if mode == "Konserwatywny":
-        # wymagające progi (4 kryteria → 3 diamenty)
         if pd.notna(price) and pd.notna(ema200) and price > ema200: pts += 1
         if pd.notna(rsi) and rsi_min <= rsi <= rsi_max: pts += 1
         if macd_cross: pts += 1
@@ -128,9 +125,7 @@ def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: i
         if pts == 3: return "💎💎"
         if pts == 2: return "💎"
         return "–"
-
     elif mode == "Umiarkowany":
-        # 3 kryteria → 3 diamenty
         if pd.notna(price) and pd.notna(ema200) and (price >= ema200*0.995): pts += 1
         if pd.notna(rsi) and (rsi_min-2) <= rsi <= (rsi_max+2): pts += 1
         if macd_cross: pts += 1
@@ -139,9 +134,7 @@ def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: i
         if pts == 2: return "💎💎"
         if pts == 1: return "💎"
         return "–"
-
     else:  # Agresywny
-        # 2–3 kryteria → 3 diamenty, miękkie progi
         if pd.notna(price) and pd.notna(ema200) and (price >= ema200*0.98): pts += 1
         if pd.notna(rsi) and (rsi_min-5) <= rsi <= (rsi_max+5): pts += 1
         if macd_cross: pts += 1
@@ -162,15 +155,17 @@ def diamond_rank(di: str) -> int:
     return 0 if di == "–" else len(di)
 
 # =========================
-# SIDEBAR – PROSTE USTAWIENIA
+# SIDEBAR – JEDNO MIEJSCE: "USTAWIENIA"
+# (przeniesione WSZYSTKO do jednego expandera)
 # =========================
 with st.sidebar:
-    st.header("⚙️ Ustawienia")
-    source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
-    period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
+    with st.expander("Ustawienia", expanded=True):
+        # To, co wcześniej było w "Ustawieniach" (proste):
+        source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
+        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
-    st.markdown("---")
-    with st.expander("Ustawienia zaawansowane", expanded=False):
+        st.markdown("---")
+        # To, co wcześniej było w "Ustawieniach zaawansowanych":
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
