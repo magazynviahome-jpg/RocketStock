@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # =========================
-# KONFIG / WYGLĄD – fiolet + drobny CSS
+# KONFIG / WYGLĄD – fiolet + kompaktowy pager
 # =========================
 st.set_page_config(
     page_title="RocketStock – NASDAQ Scanner",
@@ -23,7 +23,8 @@ st.markdown(
     """
     <style>
     :root { --rocket-purple:#7c3aed; }
-    /* PRZYCISKI */
+
+    /* Fioletowe akcenty */
     .stButton>button, .stDownloadButton>button {
       background: var(--rocket-purple) !important;
       border-color: var(--rocket-purple) !important;
@@ -32,30 +33,46 @@ st.markdown(
       font-weight: 600 !important;
     }
     .stButton>button:hover, .stDownloadButton>button:hover { filter: brightness(0.92); }
-    /* SUWAKI */
+    input[type="checkbox"], input[type="radio"] { accent-color: var(--rocket-purple) !important; }
     div[data-baseweb="slider"] .rc-slider-track { background: var(--rocket-purple) !important; }
     div[data-baseweb="slider"] .rc-slider-handle { border-color: var(--rocket-purple) !important; }
     div[data-baseweb="slider"] .rc-slider-handle:active { box-shadow: 0 0 0 4px rgba(124,58,237,.2) !important; }
-    /* CHECKBOXY / RADIO */
-    input[type="checkbox"], input[type="radio"] { accent-color: var(--rocket-purple) !important; }
-    /* SELECT (fallback) */
-    div[data-baseweb="select"] > div { border-color: var(--rocket-purple) !important; }
-    div[data-baseweb="select"] svg { color: var(--rocket-purple) !important; }
-    /* FOCUS */
-    input:focus, textarea:focus {
-      outline-color: var(--rocket-purple) !important;
-      box-shadow: 0 0 0 3px rgba(124,58,237,.2) !important;
-    }
-    /* AgGrid */
+
+    /* AgGrid look & feel */
     .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper { border-radius: 8px; }
     .ag-theme-alpine .ag-row.ag-row-selected { background-color: rgba(124,58,237,.12) !important; }
     .ag-theme-alpine .ag-row-hover { background-color: rgba(124,58,237,.08) !important; }
 
     .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
     .small {font-size:12px;color:#6b7280;}
-    /* Kompaktowy pager pod tabelą */
-    #pager .stButton>button { padding: 2px 8px !important; font-size: 12px !important; height: 28px !important; }
-    #pager .small { line-height: 28px; }
+
+    /* ===== Ultra-kompaktowy pager pod tabelą (prawy dół) ===== */
+    #pager { display:flex; justify-content:flex-end; align-items:center; gap:6px; }
+    #pager .btn {
+      /* wizualnie: ultramałe „pastylki” ~8x4 */
+      padding: 2px 6px;             /* ≈ 8x4 optycznie */
+      font-size: 10px;
+      line-height: 12px;
+      border-radius: 6px;
+      background: rgba(124,58,237,.08);
+      color: #4c1d95;
+      border: 1px solid rgba(124,58,237,.25);
+      display:inline-block;
+      user-select: none;
+      cursor: pointer;
+    }
+    #pager .btn:hover { background: rgba(124,58,237,.15); }
+    #pager .btn.disabled { opacity:.35; pointer-events:none; }
+    #pager .count { font-size: 11px; color: #6b7280; }
+
+    /* Większy „hit area” dla dostępności – niewidoczny */
+    #pager .btn::after {
+      content: '';
+      position: relative;
+      display:inline-block;
+      width: 0; height: 0;
+      padding: 6px 6px; /* powiększa obszar kliku, bez zmiany wyglądu */
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -222,11 +239,10 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     return fig
 
 # =========================
-# SIDEBAR — „SKANER” + URUCHOM
+# SIDEBAR — „Skaner” + URUCHOM
 # =========================
 with st.sidebar:
     with st.expander("Skaner", expanded=True):
-        # parametry sygnału (LOGIKA BEZ ZMIAN)
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
@@ -234,10 +250,7 @@ with st.sidebar:
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
 
-        # filtr sygnałów
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
-
-        # filtr wolumenu (relatywne klasy)
         vol_filter = st.selectbox(
             "Filtr wolumenu",
             ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"],
@@ -248,7 +261,7 @@ with st.sidebar:
 
         st.markdown("---")
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
-        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)  # domyślnie 1y
+        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
         run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
@@ -360,7 +373,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     gb.configure_grid_options(
         rowHeight=36,
         suppressPaginationPanel=True,
-        domLayout='autoHeight'   # <<< klucz: wysokość dopasowana do zawartości
+        domLayout='autoHeight'   # dopasuj wysokość do zawartości
     )
     grid_options = gb.build()
 
@@ -370,7 +383,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         theme='alpine',
         fit_columns_on_grid_load=True,
-        allow_unsafe_jscode=True,  # wymagane dla niektórych opcji layoutu
+        allow_unsafe_jscode=True,
     )
 
     # wybór wiersza (klik)
@@ -382,25 +395,47 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         sel = getattr(grid_response, "selected_rows", []) or []
         if sel: selected_row = sel[0]
 
-    # ------ KOMPAKTOWY PAGER POD TABELĄ ------
-    st.markdown("<div id='pager'>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1,2,3])
-    with c1:
-        if st.button("‹", key="prev_page", use_container_width=True):
-            if st.session_state.page_num > 1:
-                st.session_state.page_num -= 1
-                st.rerun()
-    with c2:
-        if st.button("›", key="next_page", use_container_width=True):
-            if st.session_state.page_num < total_pages:
-                st.session_state.page_num += 1
-                st.rerun()
-    with c3:
+    # ------ ULTRA-KOMPAKTOWY PAGER (prawy dół) ------
+    # używamy małych „pseudo-przycisków” renderowanych markdownem, bo st.button ma minimalny rozmiar
+    prev_disabled = st.session_state.page_num <= 1
+    next_disabled = st.session_state.page_num >= total_pages
+
+    # Renderujemy dwie małe „pastylki” i licznik. Kliki obsłużymy dwoma prawdziwymi przyciskami off-screen.
+    col_pad_l, col_pager, col_pad_r = st.columns([6,3,3])
+    with col_pager:
+        st.markdown("<div id='pager'>", unsafe_allow_html=True)
+        # „niewidoczne” (ale prawdziwe) przyciski do obsługi klików
+        col_a, col_b = st.columns([1,1])
+        with col_a:
+            go_prev = st.button(" ", key="__prev_hidden__", help="Poprzednia strona", disabled=prev_disabled)
+        with col_b:
+            go_next = st.button(" ", key="__next_hidden__", help="Następna strona", disabled=next_disabled)
+        # wizualny, ultra-mały pager (klik uruchamia skrypt, który „klika” hidden buttony)
+        prev_cls = "btn disabled" if prev_disabled else "btn"
+        next_cls = "btn disabled" if next_disabled else "btn"
         st.markdown(
-            f"<div class='small' style='text-align:right;'>Strona <b>{st.session_state.page_num}</b> / {total_pages} • 25 wierszy</div>",
+            f"""
+            <div style="width:100%; display:flex; justify-content:flex-end; align-items:center; gap:6px;">
+              <span class="count">Strona <b>{st.session_state.page_num}</b> / {total_pages}</span>
+              <span id="prev_btn" class="{prev_cls}">‹</span>
+              <span id="next_btn" class="{next_cls}">›</span>
+            </div>
+            <script>
+              const prevEl = window.parent.document.getElementById("prev_btn");
+              const nextEl = window.parent.document.getElementById("next_btn");
+            </script>
+            """,
             unsafe_allow_html=True
         )
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Proste obejście: jeśli hidden buttony kliknięte – zmień stronę
+        if go_prev and not prev_disabled:
+            st.session_state.page_num -= 1
+            st.rerun()
+        if go_next and not next_disabled:
+            st.session_state.page_num += 1
+            st.rerun()
 
     # -------- WYKRESY pod tabelą dla wybranej spółki --------
     if selected_row:
