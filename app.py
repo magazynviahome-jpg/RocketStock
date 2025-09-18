@@ -50,7 +50,9 @@ st.markdown(
     .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper { border-radius: 8px; }
     .ag-theme-alpine .ag-row.ag-row-selected { background-color: rgba(124,58,237,.12) !important; }
     .ag-theme-alpine .ag-row-hover { background-color: rgba(124,58,237,.08) !important; }
+
     .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
+    .small {font-size:12px;color:#6b7280;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -65,6 +67,7 @@ NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt"
 
 @st.cache_data(show_spinner=False, ttl=60*30)
 def fetch_nasdaq_online() -> pd.DataFrame:
+    """Pobiera listę NASDAQ (txt z separatorami |) i zwraca DataFrame z kolumną 'Ticker'."""
     resp = requests.get(NASDAQ_URL, timeout=15)
     resp.raise_for_status()
     content = resp.content.decode("utf-8", errors="ignore")
@@ -81,6 +84,7 @@ def fetch_nasdaq_online() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_tickers_from_csv(path: str = "nasdaq_tickers_full.csv") -> pd.DataFrame:
+    """Wczytuje tickery z pliku CSV w repo (kolumna 'Ticker')."""
     df = pd.read_csv(path)
     if "Ticker" not in df.columns:
         raise ValueError("Plik CSV musi mieć kolumnę 'Ticker'.")
@@ -89,6 +93,7 @@ def load_tickers_from_csv(path: str = "nasdaq_tickers_full.csv") -> pd.DataFrame
     return df
 
 def get_tickers(source: str) -> pd.DataFrame:
+    """Źródło: Online (fallback do CSV) lub tylko CSV."""
     if source == "Auto (online, fallback do CSV)":
         try:
             t = fetch_nasdaq_online()
@@ -108,6 +113,7 @@ def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
+    """RSI, EMA200, MACD, średni wolumen (LOGIKA BEZ ZMIAN)."""
     if "Close" not in df.columns or "Volume" not in df.columns:
         raise ValueError("Dane muszą zawierać 'Close' i 'Volume'.")
     df["RSI"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
@@ -174,6 +180,7 @@ def diamond_rank(di: str) -> int:
     return 0 if di == "–" else len(di)
 
 def volume_label_from_ratio_qtile(q) -> str:
+    """Opis wolumenu wg kwantyli (relatywnie do pozostałych wyników)."""
     if pd.isna(q): return "—"
     if q >= 0.80:  return "Bardzo wysoki"
     if q >= 0.60:  return "Wysoki"
@@ -218,6 +225,7 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
 # =========================
 with st.sidebar:
     with st.expander("Skaner", expanded=True):
+        # parametry sygnału (LOGIKA BEZ ZMIAN)
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
@@ -225,15 +233,21 @@ with st.sidebar:
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
 
+        # filtr sygnałów
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
-        vol_filter = st.selectbox("Filtr wolumenu",
-                                  ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"], index=0)
+
+        # filtr wolumenu (relatywne klasy)
+        vol_filter = st.selectbox(
+            "Filtr wolumenu",
+            ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"],
+            index=0
+        )
 
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 3500, 300, step=50)
 
         st.markdown("---")
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
-        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
+        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)  # domyślnie 1y
 
         run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
@@ -276,26 +290,26 @@ if run_scan:
         st.session_state.scan_results = pd.DataFrame(results)
 
 # =========================
-# TABELA + RĘCZNE STRONY + WYKRESY
+# TABELA + NOWA PAGINACJA NA DOLE + WYKRESY
 # =========================
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # usuń 1-diamentowe z widoku, zostaw 💎💎, 💎💎💎 i „–”
+    # usuń 1-diamentowe z widoku; zostaw 💎💎, 💎💎💎, „–”
     df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])]
 
     # „tylko 💎💎💎”
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
-    # klasy wolumenu wg kwantyli
+    # klasy wolumenu wg kwantyli (żeby „Bardzo wysoki” = najwyższe)
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
         df_res["VolRankPct"] = qtiles
         df_res["Wolumen"] = df_res["VolRankPct"].apply(volume_label_from_ratio_qtile)
     else:
-        def _label_fallback(row):
+        def _fallback(row):
             v, a = row.get("Volume"), row.get("AvgVolume")
             if pd.isna(v) or pd.isna(a) or a <= 0: return "—"
             r = float(v) / float(a)
@@ -304,44 +318,45 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             if r > 1.0: return "Normalny"
             if r > 0.5: return "Niski"
             return "Bardzo niski"
-        df_res["Wolumen"] = df_res.apply(_label_fallback, axis=1)
+        df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
     # filtr wolumenu
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
-    # kolumny widoku + sort
+    # widok + sort
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen"]
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
-    df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"])
+    df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
 
-    # ======= własna paginacja =======
-    st.subheader("📋 Wyniki skanera")
-    total_rows = len(df_res)
-    left, mid, right = st.columns([1,1,6])
+    # ---------- własna paginacja (sterowanie na dole) ----------
+    if "page_size" not in st.session_state: st.session_state.page_size = 25
+    if "page_num" not in st.session_state:  st.session_state.page_num  = 1
 
-    with left:
-        page_size = st.selectbox("Wierszy/stronę", [10, 25, 50, 100], index=1, key="pagesize")
-    total_pages = max(1, math.ceil(total_rows / page_size))
-    with mid:
-        page_num = st.number_input("Strona", min_value=1, max_value=total_pages, value=1, step=1, key="pagenum")
+    total_rows  = len(df_res)
+    total_pages = max(1, (total_rows + st.session_state.page_size - 1) // st.session_state.page_size)
+    st.session_state.page_num = min(st.session_state.page_num, total_pages)
 
-    start = (page_num - 1) * page_size
-    end = start + page_size
+    # bieżący wycinek
+    start = (st.session_state.page_num - 1) * st.session_state.page_size
+    end   = start + st.session_state.page_size
     df_page = df_res.iloc[start:end].copy()
 
+    # nagłówek z krótkimi info (u góry tabeli)
+    st.subheader("📋 Wyniki skanera")
     st.write(
         f"<span class='pill'>Wyników: <b>{total_rows}</b></span>"
-        f"<span class='pill'>Strona: <b>{page_num}/{total_pages}</b></span>"
-        f"<span class='pill'>RSI: <b>{rsi_min}–{rsi_max}</b></span>",
+        f"<span class='pill'>RSI: <b>{rsi_min}–{rsi_max}</b></span>"
+        f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
+        f"<span class='pill'>Okres: <b>{period}</b></span>",
         unsafe_allow_html=True
     )
 
-    # AgGrid BEZ własnej paginacji (renderujemy tylko bieżącą stronę)
+    # tabela (renderujemy tylko aktualną stronę; bez paska AgGrid)
     gb = GridOptionsBuilder.from_dataframe(df_page[view_cols])
     gb.configure_selection('single', use_checkbox=False)
-    gb.configure_grid_options(rowHeight=36)
+    gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True)
     grid_options = gb.build()
 
     grid_response = AgGrid(
@@ -353,17 +368,46 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         fit_columns_on_grid_load=True,
     )
 
-    # wybór wiersza
+    # wybór wiersza (klik)
     selected_row = None
-    selected_rows = []
     if isinstance(grid_response, dict):
-        selected_rows = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
+        sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
+        if sel: selected_row = sel[0]
     elif hasattr(grid_response, "selected_rows"):
-        selected_rows = getattr(grid_response, "selected_rows", []) or []
-    if selected_rows:
-        selected_row = selected_rows[0]
+        sel = getattr(grid_response, "selected_rows", []) or []
+        if sel: selected_row = sel[0]
 
-    # WYKRESY POD TABELĄ
+    # ------ KONTROLIKI NA DOLE (małe, dyskretne) ------
+    st.write("")  # odstęp
+    c1, c2, c3 = st.columns([2,3,2])
+    with c1:
+        st.caption("Wierszy na stronę")
+        size_options = [10, 25, 50, 100]
+        try:
+            size_index = size_options.index(st.session_state.page_size)
+        except ValueError:
+            size_index = 1
+        new_size = st.selectbox("", size_options, index=size_index, key="page_size_select", label_visibility="collapsed")
+        if new_size != st.session_state.page_size:
+            st.session_state.page_size = new_size
+            st.session_state.page_num = 1
+            st.rerun()
+    with c2:
+        st.caption("Nawigacja stron")
+        bc, bn = st.columns(2)
+        if bc.button("‹ Poprzednia", use_container_width=True):
+            if st.session_state.page_num > 1:
+                st.session_state.page_num -= 1
+                st.rerun()
+        if bn.button("Następna ›", use_container_width=True):
+            if st.session_state.page_num < total_pages:
+                st.session_state.page_num += 1
+                st.rerun()
+    with c3:
+        st.caption("Aktualna strona")
+        st.markdown(f"<div class='small' style='padding-top:8px;'>Strona <b>{st.session_state.page_num}</b> / {total_pages}</div>", unsafe_allow_html=True)
+
+    # -------- WYKRESY pod tabelą dla wybranej spółki --------
     if selected_row:
         sym = selected_row["Ticker"]
         st.markdown("---")
