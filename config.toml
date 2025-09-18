@@ -1,0 +1,6 @@
+[theme]
+primaryColor="#7c3aed"      # fiolet — akcent (przyciski, suwaki)
+backgroundColor="#ffffff"   # tło
+secondaryBackgroundColor="#f5f3ff"  # tło paneli
+textColor="#111827"         # tekst
+font="sans serif"
