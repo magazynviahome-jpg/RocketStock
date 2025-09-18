@@ -38,7 +38,7 @@ st.markdown(
     div[data-baseweb="slider"] .rc-slider-handle:active { box-shadow: 0 0 0 4px rgba(124,58,237,.2) !important; }
     /* CHECKBOXY / RADIO */
     input[type="checkbox"], input[type="radio"] { accent-color: var(--rocket-purple) !important; }
-    /* SELECTY (fallback) */
+    /* SELECT (fallback) */
     div[data-baseweb="select"] > div { border-color: var(--rocket-purple) !important; }
     div[data-baseweb="select"] svg { color: var(--rocket-purple) !important; }
     /* FOCUS */
@@ -53,12 +53,13 @@ st.markdown(
 
     .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
     .small {font-size:12px;color:#6b7280;}
+    /* Kompaktowy pager pod tabelą */
+    #pager .stButton>button { padding: 2px 8px !important; font-size: 12px !important; height: 28px !important; }
+    #pager .small { line-height: 28px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-# (na Twoją prośbę – brak tytułu/tekstu u góry)
 
 # =========================
 # STAŁE / CACHE
@@ -290,7 +291,7 @@ if run_scan:
         st.session_state.scan_results = pd.DataFrame(results)
 
 # =========================
-# TABELA + NOWA PAGINACJA NA DOLE + WYKRESY
+# TABELA + PAGINACJA POD TABELĄ (25/str) + WYKRESY
 # =========================
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
@@ -330,17 +331,17 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
     df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
 
-    # ---------- własna paginacja (sterowanie na dole) ----------
-    if "page_size" not in st.session_state: st.session_state.page_size = 25
+    # ---------- paginacja: STAŁE 25 WIERSZY / STRONĘ ----------
+    PAGE_SIZE = 25
     if "page_num" not in st.session_state:  st.session_state.page_num  = 1
 
     total_rows  = len(df_res)
-    total_pages = max(1, (total_rows + st.session_state.page_size - 1) // st.session_state.page_size)
+    total_pages = max(1, math.ceil(total_rows / PAGE_SIZE))
     st.session_state.page_num = min(st.session_state.page_num, total_pages)
 
     # bieżący wycinek
-    start = (st.session_state.page_num - 1) * st.session_state.page_size
-    end   = start + st.session_state.page_size
+    start = (st.session_state.page_num - 1) * PAGE_SIZE
+    end   = start + PAGE_SIZE
     df_page = df_res.iloc[start:end].copy()
 
     # nagłówek z krótkimi info (u góry tabeli)
@@ -353,10 +354,14 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         unsafe_allow_html=True
     )
 
-    # tabela (renderujemy tylko aktualną stronę; bez paska AgGrid)
+    # tabela (auto-wysokość: brak przewijania – pokazuje dokładnie 25 wierszy)
     gb = GridOptionsBuilder.from_dataframe(df_page[view_cols])
     gb.configure_selection('single', use_checkbox=False)
-    gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True)
+    gb.configure_grid_options(
+        rowHeight=36,
+        suppressPaginationPanel=True,
+        domLayout='autoHeight'   # <<< klucz: wysokość dopasowana do zawartości
+    )
     grid_options = gb.build()
 
     grid_response = AgGrid(
@@ -364,8 +369,8 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         gridOptions=grid_options,
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         theme='alpine',
-        height=420,
         fit_columns_on_grid_load=True,
+        allow_unsafe_jscode=True,  # wymagane dla niektórych opcji layoutu
     )
 
     # wybór wiersza (klik)
@@ -377,35 +382,25 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         sel = getattr(grid_response, "selected_rows", []) or []
         if sel: selected_row = sel[0]
 
-    # ------ KONTROLIKI NA DOLE (małe, dyskretne) ------
-    st.write("")  # odstęp
-    c1, c2, c3 = st.columns([2,3,2])
+    # ------ KOMPAKTOWY PAGER POD TABELĄ ------
+    st.markdown("<div id='pager'>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1,2,3])
     with c1:
-        st.caption("Wierszy na stronę")
-        size_options = [10, 25, 50, 100]
-        try:
-            size_index = size_options.index(st.session_state.page_size)
-        except ValueError:
-            size_index = 1
-        new_size = st.selectbox("", size_options, index=size_index, key="page_size_select", label_visibility="collapsed")
-        if new_size != st.session_state.page_size:
-            st.session_state.page_size = new_size
-            st.session_state.page_num = 1
-            st.rerun()
-    with c2:
-        st.caption("Nawigacja stron")
-        bc, bn = st.columns(2)
-        if bc.button("‹ Poprzednia", use_container_width=True):
+        if st.button("‹", key="prev_page", use_container_width=True):
             if st.session_state.page_num > 1:
                 st.session_state.page_num -= 1
                 st.rerun()
-        if bn.button("Następna ›", use_container_width=True):
+    with c2:
+        if st.button("›", key="next_page", use_container_width=True):
             if st.session_state.page_num < total_pages:
                 st.session_state.page_num += 1
                 st.rerun()
     with c3:
-        st.caption("Aktualna strona")
-        st.markdown(f"<div class='small' style='padding-top:8px;'>Strona <b>{st.session_state.page_num}</b> / {total_pages}</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='small' style='text-align:right;'>Strona <b>{st.session_state.page_num}</b> / {total_pages} • 25 wierszy</div>",
+            unsafe_allow_html=True
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # -------- WYKRESY pod tabelą dla wybranej spółki --------
     if selected_row:
