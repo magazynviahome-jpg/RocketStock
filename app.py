@@ -1,6 +1,6 @@
 import io
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 import requests
@@ -140,13 +140,11 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataF
         return None
 
 # =========================
-# SCORING DIAMENTÓW
-# (RSI w przedziale = twardo; warunek Close>EMA200 zależny od przełącznika)
+# SCORING DIAMENTÓW (bez zmian logiki)
 # =========================
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
     if pd.isna(rsi) or rsi < rsi_min or rsi > rsi_max:
         return "–"
-
     pts = 0
     if mode == "Konserwatywny":
         if pd.notna(price) and pd.notna(ema200) and price > ema200: pts += 1
@@ -166,7 +164,7 @@ def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: i
         if pts == 2: return "💎💎"
         if pts == 1: return "💎"
         return "–"
-    else:  # Agresywny
+    else:
         if pd.notna(price) and pd.notna(ema200) and (price >= ema200*0.98): pts += 1
         if pd.notna(rsi): pts += 1
         if macd_cross: pts += 1
@@ -290,6 +288,10 @@ with st.sidebar:
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
+# zapamiętaj bieżące parametry (potrzebne do wyliczeń wejścia)
+st.session_state["period"] = period
+st.session_state["vol_window"] = vol_window
+
 # =========================
 # SKAN
 # =========================
@@ -411,7 +413,7 @@ if run_scan:
         st.session_state.scan_results = pd.DataFrame(results)
 
 # =========================
-# RANKING (bez AI)
+# RANKING (bez AI) — bez zmian
 # =========================
 def _safe(val, default=None):
     return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
@@ -420,27 +422,22 @@ def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
     close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
     rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
     volr = _safe(row.get("VolRatio")); avgv = _safe(row.get("AvgVolume"))
-    # 1) dystans do EMA200 (cap 10%)
     dist_score = 0.0
     if close and ema200 and ema200>0:
         dist = close/ema200 - 1.0
         dist_score = max(0.0, min(dist, 0.10)) / 0.10
-    # 2) RSI blisko środka
     rsi_score = 0.0
     if rsi is not None:
         mid = (rsi_min + rsi_max)/2.0
         half_range = max(1.0, (rsi_max - rsi_min)/2.0)
         rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
-    # 3) MACD siła
     macd_score = 0.0
     if macd is not None and macd_sig is not None:
         diff = macd - macd_sig
         macd_score = max(0.0, min(diff, 0.50))/0.50
-    # 4) VolRatio (cap)
     volr_score = 0.0
     if volr is not None:
         volr_score = max(0.0, min(volr, 2.0))/2.0
-    # 5) Płynność
     liq_score = 0.0
     if isinstance(avgv,(int,float)) and avgv:
         if avgv >= 5_000_000: liq_score = 1.0
@@ -464,71 +461,298 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     base = base.sort_values(["Score","AvgVolume","_dev","Ticker"], ascending=[False, False, True, True]).drop(columns=["_dev"])
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
-def summarize_row_plain_with_entry(row, rsi_min: int, rsi_max: int) -> str:
-    close = row.get("Close"); ema50 = row.get("EMA50"); ema200 = row.get("EMA200")
-    rsi = row.get("RSI"); macd = row.get("MACD"); sig = row.get("MACD_signal"); vr = row.get("VolRatio"); av = row.get("AvgVolume")
-    dist_txt = ""
-    dist_val = None
-    if pd.notna(close) and pd.notna(ema200) and ema200:
-        dist_val = (close/ema200 - 1.0)*100
-        dirl = "powyżej" if dist_val >= 0 else "poniżej"
-        dist_txt = f"Cena {dirl} EMA200 o {dist_val:.2f}%."
-    rsi_txt = f"RSI {rsi:.1f} w Twoim przedziale ({rsi_min}–{rsi_max})." if pd.notna(rsi) else ""
-    macd_txt = ""
-    macd_diff = None
-    if pd.notna(macd) and pd.notna(sig):
-        macd_diff = macd - sig
-        macd_txt = f"MACD {'powyżej' if macd_diff>=0 else 'poniżej'} sygnału (Δ={macd_diff:.3f})."
-    vr_txt = ""
-    if pd.notna(vr):
-        lab = "bardzo wysoki" if vr>=2.0 else ("wysoki" if vr>=1.5 else ("normalny" if vr>=1.0 else ("niski" if vr>=0.5 else "bardzo niski")))
-        vr_txt = f"Wolumen relatywny {lab} (VR={vr:.2f})."
-    liq_txt = ""
-    if pd.notna(av):
-        lab = "wysoka" if av>=5_000_000 else ("dobra" if av>=2_000_000 else ("umiarkowana" if av>=1_000_000 else "niewielka"))
-        liq_txt = f"Śr. wolumen: {int(av):,} ({lab}).".replace(","," ")
-
-    # --- Wyliczenie proponowanej ceny wejścia ---
-    # Do breakout potrzebujemy H20 i ATR14 — pobierzemy je na żywo (bazując na cached get_stock_df)
-    # Żeby nie dociągać całego DF-a drugi raz, w części wykresowej i tak go pobieramy;
-    # tu zrobimy prosty fallback: jeśli ATR brak, nie pokażemy wejścia.
-    entry_lines = []
+# =========================
+# FUNDEMENTY (yfinance) — helpery
+# =========================
+def _fmt_money(x, cur="USD"):
     try:
-        # Użyj okresu i okna jak w skanerze
-        period = st.session_state.get("period", "1y")
-        vol_window = st.session_state.get("vol_window", 20)
-        sym = row.get("Ticker")
-        df_full = get_stock_df(sym, period=period, vol_window=vol_window)
-        if df_full is not None and not df_full.empty:
-            last_full = df_full.iloc[-1]
-            atr = last_full.get("ATR")
-            h20 = df_full["High"].tail(20).max() if "High" in df_full.columns else None
-            if pd.notna(atr) and pd.notna(close):
-                # Breakout
-                if pd.notna(h20):
-                    entry_breakout = max(close, h20) + 0.10*float(atr)
-                    entry_lines.append(f"**Wejście (breakout):** ${entry_breakout:.2f}  _(bufor 0.10×ATR)_")
-                # Pullback
-                use_ema = ema50 if (pd.notna(ema50) and pd.notna(ema200) and pd.notna(close) and (close>ema50>ema200)) else ema200
-                if pd.notna(use_ema):
-                    entry_pullback = float(use_ema) + 0.10*float(atr)
-                    entry_lines.append(f"**Wejście (pullback):** ${entry_pullback:.2f}  _(EMA bazowa + 0.10×ATR)_")
-            # Rekomendacja
-            reco = None
-            if dist_val is not None and pd.notna(rsi):
-                if dist_val > 8 or rsi >= (rsi_max - 1):
-                    reco = "Preferuj **pullback** (mniejszy pościg, lepsze RR)."
-                else:
-                    reco = "Możliwy **breakout** nad lokalnym oporem."
-            if reco:
-                entry_lines.append(reco)
+        if x is None or (isinstance(x, float) and math.isnan(x)): return "N/A"
+        absx = abs(float(x))
+        if absx >= 1e12: s = f"{x/1e12:.2f}T"
+        elif absx >= 1e9: s = f"{x/1e9:.2f}B"
+        elif absx >= 1e6: s = f"{x/1e6:.2f}M"
+        elif absx >= 1e3: s = f"{x/1e3:.2f}K"
+        else: s = f"{x:.2f}"
+        return f"{s} {cur}"
+    except Exception:
+        return "N/A"
+
+def _fmt_pct(x):
+    try:
+        return f"{float(x)*100:.1f}%" if abs(float(x))<2 else f"{float(x):.1f}%"
+    except Exception:
+        return "N/A"
+
+def _pct_from(a, b) -> Optional[float]:
+    try:
+        if a is None or b in (None, 0): return None
+        return (float(a)/float(b)-1.0)*100.0
+    except Exception:
+        return None
+
+@st.cache_data(show_spinner=False, ttl=60*15)
+def fetch_fundamentals(ticker: str) -> dict:
+    tk = yf.Ticker(ticker)
+    data = {"ticker": ticker}
+
+    # fast_info – lekkie i szybkie
+    try:
+        fi = tk.fast_info
+    except Exception:
+        fi = {}
+    data["currency"] = fi.get("currency")
+    data["last_price"] = fi.get("last_price") or fi.get("lastPrice")
+    data["market_cap"] = fi.get("market_cap")
+    data["year_high"] = fi.get("year_high")
+    data["year_low"]  = fi.get("year_low")
+    data["shares"] = fi.get("shares")
+
+    # info (może być cięższe – robimy bezpiecznie)
+    info = {}
+    try:
+        info = tk.get_info()
+    except Exception:
+        try:
+            info = tk.info
+        except Exception:
+            info = {}
+
+    def g(key): return info.get(key)
+
+    data.update({
+        "long_name": g("longName") or g("shortName"),
+        "sector": g("sector"),
+        "industry": g("industry"),
+        "country": g("country"),
+
+        "trailing_pe": g("trailingPE"),
+        "forward_pe": g("forwardPE"),
+        "peg_ratio": g("pegRatio"),
+        "price_to_sales": g("priceToSalesTrailing12Months"),
+        "price_to_book": g("priceToBook"),
+
+        "enterprise_value": g("enterpriseValue"),
+        "ebitda": g("ebitda"),
+
+        "gross_margin": g("grossMargins"),
+        "oper_margin": g("operatingMargins"),
+        "profit_margin": g("profitMargins"),
+
+        "free_cashflow": g("freeCashflow"),
+        "total_debt": g("totalDebt"),
+        "total_cash": g("totalCash"),
+
+        "current_ratio": g("currentRatio"),
+        "quick_ratio": g("quickRatio"),
+    })
+
+    # earnings trend / price target / recommendations summary
+    try:
+        et = tk.earnings_trend
+        if isinstance(et, pd.DataFrame) and not et.empty:
+            data["forward_eps_growth"] = et.get("growth", pd.Series()).astype(float).dropna().iloc[-1] if "growth" in et else None
+    except Exception:
+        pass
+    try:
+        rs = tk.recommendations_summary
+        if isinstance(rs, pd.DataFrame) and not rs.empty:
+            data["rec_strong_buy"] = int(rs.get("strongBuy", pd.Series()).fillna(0).astype(int).sum())
+            data["rec_buy"] = int(rs.get("buy", pd.Series()).fillna(0).astype(int).sum())
+            data["rec_hold"] = int(rs.get("hold", pd.Series()).fillna(0).astype(int).sum())
+            data["rec_sell"] = int(rs.get("sell", pd.Series()).fillna(0).astype(int).sum())
+    except Exception:
+        pass
+    try:
+        pt = tk.analyst_price_target
+        if isinstance(pt, pd.DataFrame) and not pt.empty:
+            data["price_target_mean"] = float(pt["targetMean"].dropna().iloc[-1])
+            data["price_target_high"] = float(pt["targetHigh"].dropna().iloc[-1])
+            data["price_target_low"]  = float(pt["targetLow"].dropna().iloc[-1])
     except Exception:
         pass
 
-    parts = [p for p in [dist_txt,rsi_txt,macd_txt,vr_txt,liq_txt] if p]
-    base_info = " ".join(parts)
-    entry_block = ("\n\n" + "\n".join(entry_lines)) if entry_lines else ""
-    return base_info + entry_block
+    # dywidendy i yield
+    try:
+        divs = tk.dividends
+        if isinstance(divs, pd.Series) and not divs.empty:
+            ttm = float(divs.tail(4).sum())
+            lp = data.get("last_price")
+            data["div_ttm"] = ttm
+            data["div_yield"] = (ttm/lp) if (lp and lp>0) else None
+    except Exception:
+        pass
+
+    # earnings date (kalendarz)
+    try:
+        cal = tk.calendar
+        if isinstance(cal, pd.DataFrame) and not cal.empty:
+            if "Earnings Date" in cal.index:
+                ed = cal.loc["Earnings Date"].iloc[0]
+                data["earnings_date"] = pd.to_datetime(ed) if pd.notna(ed) else None
+    except Exception:
+        pass
+
+    # Historia do zwrotów / max drawdown
+    try:
+        hist = tk.history(period="1y", interval="1d", auto_adjust=False)
+        if isinstance(hist, pd.DataFrame) and not hist.empty:
+            ser = hist["Close"].dropna()
+            def ret(days):
+                if len(ser) < days+1: return None
+                return (ser.iloc[-1]/ser.iloc[-1-days]-1.0)*100.0
+            data["ret_1m"] = ret(21)
+            data["ret_3m"] = ret(63)
+            data["ret_6m"] = ret(126)
+            data["ret_1y"] = ret(252 if len(ser)>252 else len(ser)-1)
+            # max drawdown
+            roll_max = ser.cummax()
+            drawdown = ser/roll_max - 1.0
+            data["max_dd_1y"] = float(drawdown.min()*100.0)
+    except Exception:
+        pass
+
+    return data
+
+def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
+    """Zwraca (entry_breakout, entry_pullback) wg ATR i EMA50/EMA200."""
+    if df_full is None or df_full.empty: return (None, None)
+    last = df_full.iloc[-1]
+    close = last.get("Close"); atr = last.get("ATR")
+    ema50 = last.get("EMA50"); ema200 = last.get("EMA200")
+    h20 = df_full["High"].tail(20).max() if "High" in df_full.columns else None
+    if pd.isna(atr) or pd.isna(close): return (None, None)
+    entry_breakout = None
+    if pd.notna(h20):
+        entry_breakout = max(float(close), float(h20)) + 0.10*float(atr)
+    base_ema = ema50 if (pd.notna(ema50) and pd.notna(ema200) and pd.notna(close) and close>ema50>ema200) else ema200
+    entry_pullback = (float(base_ema) + 0.10*float(atr)) if pd.notna(base_ema) else None
+    return (entry_breakout, entry_pullback)
+
+def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: int):
+    """Łączy technikę (z DF skanera) z fundamentami (yfinance) i pokazuje ceny wejścia."""
+    base_row = df_src[df_src["Ticker"] == sym]
+    if base_row.empty:
+        st.info("Brak danych do podsumowania.")
+        return
+
+    row = base_row.iloc[0]
+    # TECH snapshot
+    close = row.get("Close"); rsi=row.get("RSI"); ema=row.get("EMA200"); ema50=row.get("EMA50")
+    vr=row.get("VolRatio"); macd=row.get("MACD"); sig=row.get("MACD_signal")
+    dist_pct = _pct_from(close, ema)
+    macd_delta = (macd - sig) if pd.notna(macd) and pd.notna(sig) else None
+
+    # ENTRY ceny (na bazie pełnych danych technicznych)
+    df_full = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
+    entry_break, entry_pull = compute_entries(df_full)
+
+    # FUNDEMENTY
+    fn = fetch_fundamentals(sym)
+    cur = fn.get("currency") or "USD"
+
+    # Nagłówek
+    cap_txt = _fmt_money(fn.get("market_cap"), cur)
+    title_bits = [sym, fn.get("long_name") or "", f"• {fn.get('industry') or '—'}", f"• {fn.get('country') or '—'}", f"• MC: {cap_txt}"]
+    st.markdown("**" + "  ".join([x for x in title_bits if x]) + f"  •  waluta: {cur}**")
+
+    # Snapshot TECH
+    snap = []
+    if pd.notna(close): snap.append(f"Close **${close:.2f}**")
+    if pd.notna(rsi):   snap.append(f"RSI **{rsi:.1f}** (zakres {rsi_min}–{rsi_max})")
+    if dist_pct is not None: snap.append(f"vs EMA200 **{dist_pct:.2f}%**")
+    if pd.notna(vr):    snap.append(f"VR **{vr:.2f}**")
+    if macd_delta is not None: snap.append(f"ΔMACD **{macd_delta:.3f}**")
+    st.write(" · ".join(snap))
+
+    # Wejścia + rekomendacja
+    reco = None
+    if dist_pct is not None and pd.notna(rsi):
+        if dist_pct > 8 or rsi >= (rsi_max - 1):
+            reco = "Preferuj **pullback** (mniejszy pościg, lepszy RR)."
+        else:
+            reco = "Możliwy **breakout** nad lokalnym oporem."
+    entry_lines = []
+    if entry_break is not None: entry_lines.append(f"**Wejście (breakout):** ${entry_break:.2f}  _(max(H20, Close) + 0.10×ATR)_")
+    if entry_pull  is not None: entry_lines.append(f"**Wejście (pullback):** ${entry_pull:.2f}  _(EMA bazowa + 0.10×ATR)_")
+    if entry_lines or reco:
+        st.markdown("**🎯 Proponowane wejścia**")
+        for ln in entry_lines: st.write(ln)
+        if reco: st.write(reco)
+
+    # Fundamenty — sekcje
+    with st.expander("📊 Wycena i jakość", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(f"P/E (TTM): **{fn.get('trailing_pe') if fn.get('trailing_pe') else 'N/A'}**")
+            st.write(f"Forward P/E: **{fn.get('forward_pe') if fn.get('forward_pe') else 'N/A'}**")
+            st.write(f"PEG: **{fn.get('peg_ratio') if fn.get('peg_ratio') else 'N/A'}**")
+        with col2:
+            st.write(f"P/S: **{fn.get('price_to_sales') if fn.get('price_to_sales') else 'N/A'}**")
+            st.write(f"P/B: **{fn.get('price_to_book') if fn.get('price_to_book') else 'N/A'}**")
+            ev = fn.get("enterprise_value"); ebitda = fn.get("ebitda")
+            ev_ebitda = (float(ev)/float(ebitda)) if (ev and ebitda and ebitda!=0) else None
+            st.write(f"EV/EBITDA: **{ev_ebitda:.2f}**" if ev_ebitda is not None else "EV/EBITDA: **N/A**")
+        with col3:
+            gm = fn.get("gross_margin"); om = fn.get("oper_margin"); pm = fn.get("profit_margin")
+            st.write(f"Gross Margin: **{_fmt_pct(gm)}**")
+            st.write(f"Oper. Margin: **{_fmt_pct(om)}**")
+            st.write(f"Net Margin: **{_fmt_pct(pm)}**")
+
+    with st.expander("💵 Gotówka, dług i FCF", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(f"FCF (TTM): **{_fmt_money(fn.get('free_cashflow'), cur)}**")
+        with col2:
+            st.write(f"Gotówka: **{_fmt_money(fn.get('total_cash'), cur)}**")
+            st.write(f"Dług: **{_fmt_money(fn.get('total_debt'), cur)}**")
+        with col3:
+            st.write(f"Current Ratio: **{fn.get('current_ratio') if fn.get('current_ratio') else 'N/A'}**")
+            st.write(f"Quick Ratio: **{fn.get('quick_ratio') if fn.get('quick_ratio') else 'N/A'}**")
+
+    with st.expander("📈 Zwroty i ryzyko", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(f"1M: **{fn.get('ret_1m'):.1f}%**" if fn.get("ret_1m") is not None else "1M: **N/A**")
+            st.write(f"3M: **{fn.get('ret_3m'):.1f}%**" if fn.get("ret_3m") is not None else "3M: **N/A**")
+        with col2:
+            st.write(f"6M: **{fn.get('ret_6m'):.1f}%**" if fn.get("ret_6m") is not None else "6M: **N/A**")
+            st.write(f"1Y: **{fn.get('ret_1y'):.1f}%**" if fn.get("ret_1y") is not None else "1Y: **N/A**")
+        with col3:
+            st.write(f"Max DD (1Y): **{fn.get('max_dd_1y'):.1f}%**" if fn.get("max_dd_1y") is not None else "Max DD (1Y): **N/A**")
+
+    with st.expander("🗓️ Wydarzenia i dywidendy", expanded=False):
+        earn = fn.get("earnings_date")
+        if earn is not None:
+            st.write(f"Earnings: **{pd.to_datetime(earn).date()}**")
+        else:
+            st.write("Earnings: **N/A**")
+        div_y = fn.get("div_yield")
+        if div_y is not None:
+            st.write(f"Dividend (TTM): **{_fmt_money(fn.get('div_ttm'), cur)}**  •  Yield: **{div_y*100:.2f}%**")
+        else:
+            st.write("Dividend: **N/A**")
+
+    # Szybkie „Dlaczego tak / Ryzyka”
+    reasons = []
+    if pd.notna(close) and pd.notna(ema) and close>ema: reasons.append("✅ **Trend D1:** cena > EMA200.")
+    if macd_delta is not None and macd_delta>=0: reasons.append("✅ **Momentum:** MACD > signal.")
+    if pd.notna(rsi) and rsi_min <= rsi <= rsi_max: reasons.append(f"✅ **RSI** w zakresie ({rsi_min}–{rsi_max}).")
+    risks = []
+    if dist_pct is not None and dist_pct>15: risks.append("⚠️ Spory dystans nad EMA200 (>15%).")
+    if fn.get("earnings_date") is not None:
+        # prosta flaga: jeśli earnings w ~7 sesji (ok. 10 dni kal.)
+        try:
+            if (pd.to_datetime(fn["earnings_date"]) - pd.Timestamp.today()).days <= 10:
+                risks.append("⚠️ Blisko **earnings** — ryzyko luki.")
+        except Exception:
+            pass
+
+    if reasons:
+        st.markdown("**Dlaczego na liście:**")
+        for r in reasons: st.write("- " + r)
+    if risks:
+        st.markdown("**Ryzyka / na co uważać:**")
+        for r in risks: st.write("- " + r)
 
 # =========================
 # WIDOK + TABELA + RANKING + WYKRESY
@@ -612,8 +836,8 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         gridOptions=grid_options,
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         theme='alpine',
-        height=table_height,                      # << suwak wysokości
-        fit_columns_on_grid_load=bool(fit_cols),  # << dopasuj kolumny do szerokości
+        height=table_height,
+        fit_columns_on_grid_load=bool(fit_cols),
     )
 
     # wybór z tabeli
@@ -626,7 +850,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         if sel:
             st.session_state.selected_symbol = sel[0]["Ticker"]
 
-    # -------- WYKRESY + PODSUMOWANIE --------
+    # -------- WYKRESY + PODSUMOWANIE PRO --------
     sym = st.session_state.get("selected_symbol")
     if sym:
         st.markdown("---")
@@ -654,13 +878,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
             st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
 
-            st.markdown("### 🤖 Podsumowanie (bez AI)")
-            base_row = st.session_state.scan_results
-            base_row = base_row[base_row["Ticker"] == sym]
-            if not base_row.empty:
-                text = summarize_row_plain_with_entry(base_row.iloc[0], rsi_min, rsi_max)
-                st.write(text)
-            else:
-                st.write("Brak danych do podsumowania.")
+            st.markdown("### 🧭 Podsumowanie PRO")
+            render_summary_pro(sym, st.session_state.scan_results, rsi_min, rsi_max)
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
