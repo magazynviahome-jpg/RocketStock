@@ -133,6 +133,7 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataF
 # SCORING DIAMENTÓW
 # =========================
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
+    # RSI — twardy filtr
     if pd.isna(rsi) or rsi < rsi_min or rsi > rsi_max:
         return "–"
     pts = 0
@@ -238,8 +239,8 @@ with st.sidebar:
         f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
         f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
         f_align_on = st.checkbox("Zgranie średnich: Close > EMA50 > EMA200", value=False)
+        # tylko checkbox (bez pól liczbowych)
         f_macd_fresh_on = st.checkbox("MACD świeży: cross w N dniach + histogram rośnie", value=False)
-        # stałe domyślne dla „świeżego MACD”
         f_macd_fresh_look = 3
         f_macd_hist_up_days = 1
         f_rsi_up_on = st.checkbox("RSI dziś ≥ RSI wczoraj", value=False)
@@ -255,6 +256,7 @@ with st.sidebar:
             f_vr_max = st.number_input("— VR max (cap)", 0.5, 10.0, 3.0, step=0.1, format="%.1f")
 
         st.markdown("---")
+        # Kapitalizacja (USD)
         f_mcap_on = st.checkbox("Filtr kapitalizacji (USD)", value=False)
         colM1, colM2 = st.columns(2)
         with colM1:
@@ -282,12 +284,12 @@ with st.sidebar:
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
-# zapamiętaj parametry (dla wejść)
+# Zapamiętaj parametry (dla wejść)
 st.session_state["period"] = period
 st.session_state["vol_window"] = vol_window
 
 # =========================
-# FUNDAMENTY — cache MC (gdy filtr MC jest ON)
+# FUNDAMENTY — cache MC i PRO
 # =========================
 @st.cache_data(show_spinner=False, ttl=60*30)
 def get_market_cap_fast(ticker: str) -> Optional[float]:
@@ -298,13 +300,152 @@ def get_market_cap_fast(ticker: str) -> Optional[float]:
     except Exception:
         return None
 
+def nz(x, default=None):
+    return default if (x is None or (isinstance(x, float) and pd.isna(x))) else x
+
+@st.cache_data(show_spinner=False, ttl=60*15)
+def fetch_fundamentals(ticker: str) -> dict:
+    tk = yf.Ticker(ticker)
+    data = {"ticker": ticker}
+    # fast_info
+    try:
+        fi = tk.fast_info
+    except Exception:
+        fi = {}
+    data["currency"] = fi.get("currency")
+    data["last_price"] = fi.get("last_price") or fi.get("lastPrice")
+    data["market_cap"] = fi.get("market_cap")
+    data["year_high"] = fi.get("year_high")
+    data["year_low"]  = fi.get("year_low")
+    data["shares"] = fi.get("shares")
+
+    # info (defensywnie)
+    info = {}
+    try:
+        info = tk.get_info()
+    except Exception:
+        try:
+            info = tk.info
+        except Exception:
+            info = {}
+    def g(k): return info.get(k)
+
+    data.update({
+        "long_name": g("longName") or g("shortName"),
+        "sector": g("sector"),
+        "industry": g("industry"),
+        "country": g("country"),
+        "trailing_pe": g("trailingPE"),
+        "forward_pe": g("forwardPE"),
+        "peg_ratio": g("pegRatio"),
+        "price_to_sales": g("priceToSalesTrailing12Months"),
+        "price_to_book": g("priceToBook"),
+        "enterprise_value": g("enterpriseValue"),
+        "ebitda": g("ebitda"),
+        "gross_margin": g("grossMargins"),
+        "oper_margin": g("operatingMargins"),
+        "profit_margin": g("profitMargins"),
+        "free_cashflow": g("freeCashflow"),
+        "total_debt": g("totalDebt"),
+        "total_cash": g("totalCash"),
+        "current_ratio": g("currentRatio"),
+        "quick_ratio": g("quickRatio"),
+    })
+
+    # trends / ratings / targets
+    try:
+        et = tk.earnings_trend
+        if isinstance(et, pd.DataFrame) and not et.empty:
+            col = "growth" if "growth" in et else None
+            if col:
+                data["forward_eps_growth"] = et[col].astype(float).dropna().iloc[-1]
+    except Exception:
+        pass
+    try:
+        rs = tk.recommendations_summary
+        if isinstance(rs, pd.DataFrame) and not rs.empty:
+            data["rec_strong_buy"] = int(rs.get("strongBuy", pd.Series()).fillna(0).astype(int).sum())
+            data["rec_buy"] = int(rs.get("buy", pd.Series()).fillna(0).astype(int).sum())
+            data["rec_hold"] = int(rs.get("hold", pd.Series()).fillna(0).astype(int).sum())
+            data["rec_sell"] = int(rs.get("sell", pd.Series()).fillna(0).astype(int).sum())
+    except Exception:
+        pass
+    try:
+        pt = tk.analyst_price_target
+        if isinstance(pt, pd.DataFrame) and not pt.empty:
+            data["price_target_mean"] = float(pt["targetMean"].dropna().iloc[-1])
+            data["price_target_high"] = float(pt["targetHigh"].dropna().iloc[-1])
+            data["price_target_low"]  = float(pt["targetLow"].dropna().iloc[-1])
+    except Exception:
+        pass
+    # dywidendy
+    try:
+        divs = tk.dividends
+        if isinstance(divs, pd.Series) and not divs.empty:
+            ttm = float(divs.tail(4).sum())
+            lp = data.get("last_price")
+            data["div_ttm"] = ttm
+            data["div_yield"] = (ttm/lp) if (lp and lp>0) else None
+    except Exception:
+        pass
+    # earnings date
+    try:
+        cal = tk.calendar
+        if isinstance(cal, pd.DataFrame) and not cal.empty:
+            if "Earnings Date" in cal.index:
+                ed = cal.loc["Earnings Date"].iloc[0]
+                data["earnings_date"] = pd.to_datetime(ed) if pd.notna(ed) else None
+    except Exception:
+        pass
+    # zwroty / drawdown
+    try:
+        hist = tk.history(period="1y", interval="1d", auto_adjust=False)
+        if isinstance(hist, pd.DataFrame) and not hist.empty:
+            ser = hist["Close"].dropna()
+            def ret(days):
+                if len(ser) < days+1: return None
+                return (ser.iloc[-1]/ser.iloc[-1-days]-1.0)*100.0
+            data["ret_1m"] = ret(21); data["ret_3m"] = ret(63)
+            data["ret_6m"] = ret(126); data["ret_1y"] = ret(252 if len(ser)>252 else len(ser)-1)
+            roll_max = ser.cummax(); drawdown = ser/roll_max - 1.0
+            data["max_dd_1y"] = float(drawdown.min()*100.0)
+    except Exception:
+        pass
+    return data
+
+def _fmt_money(x, cur="USD"):
+    try:
+        if x is None or (isinstance(x, float) and math.isnan(x)): return "N/A"
+        absx = abs(float(x))
+        if absx >= 1e12: s = f"{x/1e12:.2f}T"
+        elif absx >= 1e9: s = f"{x/1e9:.2f}B"
+        elif absx >= 1e6: s = f"{x/1e6:.2f}M"
+        elif absx >= 1e3: s = f"{x/1e3:.2f}K"
+        else: s = f"{x:.2f}"
+        return f"{s} {cur}"
+    except Exception:
+        return "N/A"
+
+def _fmt_pct(x):
+    try:
+        return f"{float(x)*100:.1f}%" if abs(float(x))<2 else f"{float(x):.1f}%"
+    except Exception:
+        return "N/A"
+
+def _pct_from(a, b) -> Optional[float]:
+    try:
+        if a is None or b in (None, 0): return None
+        return (float(a)/float(b)-1.0)*100.0
+    except Exception:
+        return None
+
 # =========================
 # SKAN
 # =========================
 if run_scan:
-    # reset wyborów po nowym skanie
-    st.session_state.pop("selected_from_rank", None)
-    st.session_state.pop("selected_from_table", None)
+    # zachowaj poprzedni wybór, by spróbować go przywrócić
+    prev_rank = st.session_state.get("selected_from_rank")
+    prev_table = st.session_state.get("selected_from_table")
 
     tickers_df = get_tickers(source)
     if tickers_df is None or tickers_df.empty:
@@ -315,8 +456,10 @@ if run_scan:
         for i, t in enumerate(tickers_list, start=1):
             status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
 
-            # Filtr MC (opcjonalnie, przed drogimi obliczeniami)
-            if f_mcap_on:
+            # Filtr MC przed pobraniem świec (opcjonalnie)
+            if st.session_state.get("f_mcap_on_cache") is None:
+                st.session_state["f_mcap_on_cache"] = False
+            if 'f_mcap_on' in locals() and f_mcap_on:
                 mc = get_market_cap_fast(t)
                 if mc is None or not (f_mcap_min <= mc <= f_mcap_max):
                     progress.progress(i/len(tickers_list)); continue
@@ -327,6 +470,7 @@ if run_scan:
             if df is not None and not df.empty:
                 last = df.iloc[-1]
 
+                # Bramki twarde
                 rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
                 price_ok = True
                 if require_price_above_ema200:
@@ -340,7 +484,7 @@ if run_scan:
                     di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                         macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
-                # Dodatkowe filtry
+                # Filtry opcjonalne
                 gap_ok = True
                 if f_gap_on and pd.notna(last.get("GapUpPct")):
                     gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
@@ -427,6 +571,17 @@ if run_scan:
         status.write("✅ Zakończono skan.")
         st.session_state.scan_results = pd.DataFrame(results)
 
+        # PRÓBA PRZYWRÓCENIA WYBORU po skanie (jeśli ticker nadal istnieje)
+        df_tmp = st.session_state.scan_results
+        if prev_rank in set(df_tmp["Ticker"]):
+            st.session_state["selected_from_rank"] = prev_rank
+        elif prev_table in set(df_tmp["Ticker"]):
+            st.session_state["selected_from_table"] = prev_table
+        else:
+            # jeśli nic nie ma, wyzeruj
+            st.session_state.pop("selected_from_rank", None)
+            st.session_state.pop("selected_from_table", None)
+
 # =========================
 # RANKING (bez AI)
 # =========================
@@ -437,22 +592,27 @@ def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
     close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
     rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
     volr = _safe(row.get("VolRatio")); avgv = _safe(row.get("AvgVolume"))
+    # 1) dystans do EMA200 (cap 10%) – im bliżej, tym lepiej (mniejszy pościg)
     dist_score = 0.0
     if close and ema200 and ema200>0:
         dist = close/ema200 - 1.0
         dist_score = max(0.0, min(dist, 0.10)) / 0.10
+    # 2) RSI blisko środka zakresu
     rsi_score = 0.0
     if rsi is not None:
         mid = (rsi_min + rsi_max)/2.0
         half_range = max(1.0, (rsi_max - rsi_min)/2.0)
         rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
+    # 3) MACD siła
     macd_score = 0.0
     if macd is not None and macd_sig is not None:
         diff = macd - macd_sig
         macd_score = max(0.0, min(diff, 0.50))/0.50
+    # 4) VolRatio (cap 2.0)
     volr_score = 0.0
     if volr is not None:
         volr_score = max(0.0, min(volr, 2.0))/2.0
+    # 5) Płynność
     liq_score = 0.0
     if isinstance(avgv,(int,float)) and avgv:
         if avgv >= 5_000_000: liq_score = 1.0
@@ -477,136 +637,8 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# FUNDEMENTY / PODSUMOWANIE
+# PRO: wejścia + podsumowania
 # =========================
-def _fmt_money(x, cur="USD"):
-    try:
-        if x is None or (isinstance(x, float) and math.isnan(x)): return "N/A"
-        absx = abs(float(x))
-        if absx >= 1e12: s = f"{x/1e12:.2f}T"
-        elif absx >= 1e9: s = f"{x/1e9:.2f}B"
-        elif absx >= 1e6: s = f"{x/1e6:.2f}M"
-        elif absx >= 1e3: s = f"{x/1e3:.2f}K"
-        else: s = f"{x:.2f}"
-        return f"{s} {cur}"
-    except Exception:
-        return "N/A"
-
-def _fmt_pct(x):
-    try:
-        return f"{float(x)*100:.1f}%" if abs(float(x))<2 else f"{float(x):.1f}%"
-    except Exception:
-        return "N/A"
-
-def _pct_from(a, b) -> Optional[float]:
-    try:
-        if a is None or b in (None, 0): return None
-        return (float(a)/float(b)-1.0)*100.0
-    except Exception:
-        return None
-
-@st.cache_data(show_spinner=False, ttl=60*15)
-def fetch_fundamentals(ticker: str) -> dict:
-    tk = yf.Ticker(ticker)
-    data = {"ticker": ticker}
-    try:
-        fi = tk.fast_info
-    except Exception:
-        fi = {}
-    data["currency"] = fi.get("currency")
-    data["last_price"] = fi.get("last_price") or fi.get("lastPrice")
-    data["market_cap"] = fi.get("market_cap")
-    data["year_high"] = fi.get("year_high")
-    data["year_low"]  = fi.get("year_low")
-    data["shares"] = fi.get("shares")
-
-    info = {}
-    try:
-        info = tk.get_info()
-    except Exception:
-        try:
-            info = tk.info
-        except Exception:
-            info = {}
-    def g(key): return info.get(key)
-
-    data.update({
-        "long_name": g("longName") or g("shortName"),
-        "sector": g("sector"),
-        "industry": g("industry"),
-        "country": g("country"),
-        "trailing_pe": g("trailingPE"),
-        "forward_pe": g("forwardPE"),
-        "peg_ratio": g("pegRatio"),
-        "price_to_sales": g("priceToSalesTrailing12Months"),
-        "price_to_book": g("priceToBook"),
-        "enterprise_value": g("enterpriseValue"),
-        "ebitda": g("ebitda"),
-        "gross_margin": g("grossMargins"),
-        "oper_margin": g("operatingMargins"),
-        "profit_margin": g("profitMargins"),
-        "free_cashflow": g("freeCashflow"),
-        "total_debt": g("totalDebt"),
-        "total_cash": g("totalCash"),
-        "current_ratio": g("currentRatio"),
-        "quick_ratio": g("quickRatio"),
-    })
-
-    try:
-        et = tk.earnings_trend
-        if isinstance(et, pd.DataFrame) and not et.empty:
-            data["forward_eps_growth"] = et.get("growth", pd.Series()).astype(float).dropna().iloc[-1] if "growth" in et else None
-    except Exception:
-        pass
-    try:
-        rs = tk.recommendations_summary
-        if isinstance(rs, pd.DataFrame) and not rs.empty:
-            data["rec_strong_buy"] = int(rs.get("strongBuy", pd.Series()).fillna(0).astype(int).sum())
-            data["rec_buy"] = int(rs.get("buy", pd.Series()).fillna(0).astype(int).sum())
-            data["rec_hold"] = int(rs.get("hold", pd.Series()).fillna(0).astype(int).sum())
-            data["rec_sell"] = int(rs.get("sell", pd.Series()).fillna(0).astype(int).sum())
-    except Exception:
-        pass
-    try:
-        pt = tk.analyst_price_target
-        if isinstance(pt, pd.DataFrame) and not pt.empty:
-            data["price_target_mean"] = float(pt["targetMean"].dropna().iloc[-1])
-            data["price_target_high"] = float(pt["targetHigh"].dropna().iloc[-1])
-            data["price_target_low"]  = float(pt["targetLow"].dropna().iloc[-1])
-    except Exception:
-        pass
-    try:
-        divs = tk.dividends
-        if isinstance(divs, pd.Series) and not divs.empty:
-            ttm = float(divs.tail(4).sum())
-            lp = data.get("last_price")
-            data["div_ttm"] = ttm
-            data["div_yield"] = (ttm/lp) if (lp and lp>0) else None
-    except Exception:
-        pass
-    try:
-        cal = tk.calendar
-        if isinstance(cal, pd.DataFrame) and not cal.empty:
-            if "Earnings Date" in cal.index:
-                ed = cal.loc["Earnings Date"].iloc[0]
-                data["earnings_date"] = pd.to_datetime(ed) if pd.notna(ed) else None
-    except Exception:
-        pass
-    try:
-        hist = tk.history(period="1y", interval="1d", auto_adjust=False)
-        if isinstance(hist, pd.DataFrame) and not hist.empty:
-            ser = hist["Close"].dropna()
-            def ret(days):
-                if len(ser) < days+1: return None
-                return (ser.iloc[-1]/ser.iloc[-1-days]-1.0)*100.0
-            data["ret_1m"] = ret(21); data["ret_3m"] = ret(63)
-            data["ret_6m"] = ret(126); data["ret_1y"] = ret(252 if len(ser)>252 else len(ser)-1)
-            roll_max = ser.cummax(); drawdown = ser/roll_max - 1.0
-            data["max_dd_1y"] = float(drawdown.min()*100.0)
-    except Exception:
-        pass
-    return data
-
 def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
     if df_full is None or df_full.empty: return (None, None)
     last = df_full.iloc[-1]
@@ -659,6 +691,64 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         for ln in entry_lines: st.write(ln)
         if reco: st.write(reco)
 
+    with st.expander("📊 Wycena i jakość", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(f"P/E (TTM): **{nz(fn.get('trailing_pe'),'N/A')}**")
+            st.write(f"Forward P/E: **{nz(fn.get('forward_pe'),'N/A')}**")
+            st.write(f"PEG: **{nz(fn.get('peg_ratio'),'N/A')}**")
+        with col2:
+            st.write(f"P/S: **{nz(fn.get('price_to_sales'),'N/A')}**")
+            st.write(f"P/B: **{nz(fn.get('price_to_book'),'N/A')}**")
+            ev = nz(fn.get("enterprise_value")); ebitda = nz(fn.get("ebitda"))
+            try:
+                ev_ebitda = (float(ev)/float(ebitda)) if (ev and ebitda and float(ebitda)!=0) else None
+            except Exception:
+                ev_ebitda = None
+            st.write(f"EV/EBITDA: **{ev_ebitda:.2f}**" if ev_ebitda is not None else "EV/EBITDA: **N/A**")
+        with col3:
+            gm = fn.get("gross_margin"); om = fn.get("oper_margin"); pm = fn.get("profit_margin")
+            st.write(f"Gross Margin: **{_fmt_pct(gm)}**")
+            st.write(f"Oper. Margin: **{_fmt_pct(om)}**")
+            st.write(f"Net Margin: **{_fmt_pct(pm)}**")
+
+    with st.expander("💵 Gotówka, dług i FCF", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(f"FCF (TTM): **{_fmt_money(fn.get('free_cashflow'), cur)}**")
+        with col2:
+            st.write(f"Gotówka: **{_fmt_money(fn.get('total_cash'), cur)}**")
+            st.write(f"Dług: **{_fmt_money(fn.get('total_debt'), cur)}**")
+        with col3:
+            st.write(f"Current Ratio: **{nz(fn.get('current_ratio'),'N/A')}**")
+            st.write(f"Quick Ratio: **{nz(fn.get('quick_ratio'),'N/A')}**")
+
+    with st.expander("📈 Zwroty i ryzyko", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(f"1M: **{fn.get('ret_1m'):.1f}%**" if fn.get("ret_1m") is not None else "1M: **N/A**")
+            st.write(f"3M: **{fn.get('ret_3m'):.1f}%**" if fn.get("ret_3m") is not None else "3M: **N/A**")
+        with col2:
+            st.write(f"6M: **{fn.get('ret_6m'):.1f}%**" if fn.get("ret_6m") is not None else "6M: **N/A**")
+            st.write(f"1Y: **{fn.get('ret_1y'):.1f}%**" if fn.get("ret_1y") is not None else "1Y: **N/A**")
+        with col3:
+            st.write(f"Max DD (1Y): **{fn.get('max_dd_1y'):.1f}%**" if fn.get("max_dd_1y") is not None else "Max DD (1Y): **N/A**")
+
+    with st.expander("🗓️ Wydarzenia i dywidendy", expanded=False):
+        earn = fn.get("earnings_date")
+        if earn is not None:
+            try:
+                st.write(f"Earnings: **{pd.to_datetime(earn).date()}**")
+            except Exception:
+                st.write("Earnings: **N/A**")
+        else:
+            st.write("Earnings: **N/A**")
+        div_y = fn.get("div_yield")
+        if div_y is not None:
+            st.write(f"Dividend (TTM): **{_fmt_money(fn.get('div_ttm'), cur)}**  •  Yield: **{div_y*100:.2f}%**")
+        else:
+            st.write("Dividend: **N/A**")
+
     reasons = []
     if pd.notna(close) and pd.notna(ema) and close>ema: reasons.append("✅ **Trend D1:** cena > EMA200.")
     if macd_delta is not None and macd_delta>=0: reasons.append("✅ **Momentum:** MACD > signal.")
@@ -679,7 +769,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # Klasy wolumenu
+    # Klasy wolumenu (etykiety)
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -697,7 +787,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
-    # Filtry widoku
+    # Filtr wolumenu (widok)
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
@@ -709,7 +799,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         if rank_df.empty:
             st.info("Brak kandydatów (💎💎💎 + aktywne filtry). Zmień parametry.")
         else:
-            per_row = 6 if "Kompakt" in rank_layout else (4 if "Średni" in rank_layout else 3)
+            per_row = 6 if "Kompakt (6/wiersz)" in rank_layout else (4 if "Średni" in rank_layout else 3)
             for start in range(0, len(rank_df), per_row):
                 row_slice = rank_df.iloc[start:start+per_row]
                 cols = st.columns(len(row_slice))
@@ -717,20 +807,19 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
                     with col:
                         label = f"{start + rr.name + 1}. {rr['Ticker']} · {rr['Score']:.1f}"
                         if st.button(label, key=f"chip_{rr['Ticker']}", use_container_width=True):
-                            # ZAPISZ wybór z rankingu (priorytet nad tabelą)
                             st.session_state["selected_from_rank"] = rr["Ticker"]
 
     # ===== TABELA =====
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
 
-    # WYMUSZ „tylko 💎💎💎” – NAJPIERW
+    # Wymuś „tylko 💎💎💎” tuż przed tabelą
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
-    # (opcjonalnie) zawężenie do znanych stanów
+    # opcjonalne zawężenie do 3 stanów (utrzymanie ładu w tabeli)
     df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])].reset_index(drop=True)
 
-    # sort widoku
+    # sort
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
     df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
@@ -760,7 +849,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         key="scan_table",
     )
 
-    # wybór z tabeli – zapis osobno
+    # wybór z tabeli — zapisz
     selected_row = None
     if isinstance(grid_response, dict):
         sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
@@ -773,16 +862,16 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     if selected_row:
         st.session_state["selected_from_table"] = selected_row["Ticker"]
 
-    # Priorytet: ranking > tabela
+    # Priorytet wyboru: ranking > tabela
     sym = st.session_state.get("selected_from_rank") or st.session_state.get("selected_from_table")
 
-    # -------- WYKRESY + PODSUMOWANIE --------
+    # -------- WYKRESY + PODSUMOWANIE PRO --------
     if sym:
         st.markdown("---")
         st.subheader(f"📈 {sym} — podgląd wykresów")
 
         with st.spinner(f"Ładuję wykresy dla {sym}…"):
-            df_sel = get_stock_df(sym, period=period, vol_window=vol_window)
+            df_sel = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
 
         if df_sel is None or df_sel.empty:
             st.error("Nie udało się pobrać danych wykresu.")
@@ -804,7 +893,9 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
 
             st.markdown("### 🧭 Podsumowanie PRO")
-            render_summary_pro(sym, st.session_state.scan_results, rsi_min, rsi_max)
-
+            try:
+                render_summary_pro(sym, st.session_state.scan_results, rsi_min, rsi_max)
+            except Exception as e:
+                st.warning(f"Nie udało się zbudować Podsumowania PRO: {e}")
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
