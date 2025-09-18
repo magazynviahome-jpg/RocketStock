@@ -233,6 +233,7 @@ with st.sidebar:
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
     with st.expander("Dodatkowe filtry (opcjonalne)", expanded=False):
+        # wszystkie odznaczone domyślnie
         f_maxdist_on = st.checkbox("Max dystans do EMA200", value=False)
         f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
         f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
@@ -280,16 +281,15 @@ with st.sidebar:
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
-# zapamiętaj parametry do wyliczeń wejść / cache
+# pamiętaj ważne rzeczy w stanie
 st.session_state["period"] = period
 st.session_state["vol_window"] = vol_window
-
-# >>> NEW: stan wyboru + źródło ostatniej interakcji
 st.session_state.setdefault("selected_symbol", None)
-st.session_state.setdefault("selection_source", None)  # "rank" | "table"
+st.session_state.setdefault("selection_source", None)          # "rank" | "table"
+st.session_state.setdefault("last_table_selected", None)       # ostatni ticker wybrany w tabeli
 
 # =========================
-# FUNDAMENTY — cache MC i PRO
+# FUNDAMENTY + SHORT (yfinance)
 # =========================
 @st.cache_data(show_spinner=False, ttl=60*30)
 def get_market_cap_fast(ticker: str) -> Optional[float]:
@@ -348,8 +348,14 @@ def fetch_fundamentals(ticker: str) -> dict:
         "total_cash": g("totalCash"),
         "current_ratio": g("currentRatio"),
         "quick_ratio": g("quickRatio"),
+        # --- SHORT (Yahoo) ---
+        "shares_short": g("sharesShort"),
+        "short_ratio": g("shortRatio"),
+        "short_percent_float": g("shortPercentOfFloat"),
+        "shares_float": g("floatShares") or g("sharesFloat"),
     })
 
+    # trendy i rekomendacje (best effort)
     try:
         et = tk.earnings_trend
         if isinstance(et, pd.DataFrame) and not et.empty:
@@ -473,6 +479,7 @@ if run_scan:
                     di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                         macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
+                # dodatkowe filtry (opcjonalne)
                 gap_ok = True
                 if f_gap_on and pd.notna(last.get("GapUpPct")):
                     gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
@@ -559,15 +566,15 @@ if run_scan:
         status.write("✅ Zakończono skan.")
         st.session_state.scan_results = pd.DataFrame(results)
 
-        # PRZYWRÓĆ poprzedni wybór + źródło, jeśli ticker nadal istnieje w wynikach
+        # przywróć poprzedni wybór, jeśli nadal istnieje
         if prev_symbol and prev_symbol in set(st.session_state.scan_results["Ticker"]):
             st.session_state["selected_symbol"] = prev_symbol
             st.session_state["selection_source"] = prev_source
         else:
-            # nie czyść – zostaw None; nowy wybór nastąpi kliknięciem
             if not prev_symbol:
                 st.session_state["selected_symbol"] = None
                 st.session_state["selection_source"] = None
+        # nie resetuj last_table_selected — to pomaga wykryć "nowy" klik
 
 # =========================
 # RANKING (bez AI)
@@ -619,7 +626,7 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# PRO: wejścia + podsumowania
+# PRO: wejścia + podsumowania (w tym short z Yahoo)
 # =========================
 def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
     if df_full is None or df_full.empty: return (None, None)
@@ -694,17 +701,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
             st.write(f"Oper. Margin: **{_fmt_pct(om)}**")
             st.write(f"Net Margin: **{_fmt_pct(pm)}**")
 
-    with st.expander("💵 Gotówka, dług i FCF", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.write(f"FCF (TTM): **{_fmt_money(fn.get('free_cashflow'), cur)}**")
-        with col2:
-            st.write(f"Gotówka: **{_fmt_money(fn.get('total_cash'), cur)}**")
-            st.write(f"Dług: **{_fmt_money(fn.get('total_debt'), cur)}**")
-        with col3:
-            st.write(f"Current Ratio: **{nz(fn.get('current_ratio'),'N/A')}**")
-            st.write(f"Quick Ratio: **{nz(fn.get('quick_ratio'),'N/A')}**")
-
     with st.expander("📈 Zwroty i ryzyko", expanded=False):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -731,6 +727,23 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         else:
             st.write("Dividend: **N/A**")
 
+    # --- NEW: Short interest (Yahoo) ---
+    with st.expander("📉 Short interest (Yahoo)", expanded=False):
+        ss = fn.get("shares_short")
+        spf = fn.get("short_percent_float")
+        sr  = fn.get("short_ratio")
+        flt = fn.get("shares_float")
+        row1 = f"Shares short: **{int(ss):,}**" if ss not in (None, float('nan')) else "Shares short: **N/A**"
+        row1 = row1.replace(",", " ")
+        st.write(row1)
+        st.write(f"Short % float: **{spf*100:.2f}%**" if spf not in (None, float('nan')) else "Short % float: **N/A**")
+        st.write(f"Short ratio (days to cover): **{sr:.2f}**" if sr not in (None, float('nan')) else "Short ratio: **N/A**")
+        if flt not in (None, float('nan')):
+            try:
+                st.write(f"Float shares: **{int(flt):,}**".replace(",", " "))
+            except Exception:
+                st.write("Float shares: **N/A**")
+
     reasons = []
     if pd.notna(close) and pd.notna(ema) and close>ema: reasons.append("✅ **Trend D1:** cena > EMA200.")
     if macd_delta is not None and macd_delta>=0: reasons.append("✅ **Momentum:** MACD > signal.")
@@ -751,6 +764,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
+    # Klasy wolumenu
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -768,6 +782,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
+    # Filtr wolumenu (widok)
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
@@ -779,14 +794,13 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         if rank_df.empty:
             st.info("Brak kandydatów (💎💎💎 + aktywne filtry). Zmień parametry.")
         else:
-            per_row = 6 if "Kompakt (6/wiersz)" in rank_layout else (4 if "Średni" in rank_layout else 3)
+            per_row = 6 if "Kompakt (6/wiersz)" in rank_layout else (4 if "Średni (4/wiersz)" in rank_layout else 3)
             for start in range(0, len(rank_df), per_row):
                 row_slice = rank_df.iloc[start:start+per_row]
                 cols = st.columns(len(row_slice))
                 for col, (_, rr) in zip(cols, row_slice.iterrows()):
                     with col:
                         label = f"{start + rr.name + 1}. {rr['Ticker']} · {rr['Score']:.1f}"
-                        # >>> NEW: klik w ranking ustawia symbol + źródło = "rank"
                         if st.button(label, key=f"chip_{rr['Ticker']}", use_container_width=True):
                             st.session_state["selected_symbol"] = rr["Ticker"]
                             st.session_state["selection_source"] = "rank"
@@ -794,12 +808,12 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     # ===== TABELA =====
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
 
-    # „Pokaż tylko 💎💎💎” – wymuszony tuż przed tabelą
+    # „Pokaż tylko 💎💎💎” – stosujemy TUŻ przed tabelą (widok)
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
+    # porządek i sort
     df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])].reset_index(drop=True)
-
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
     df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
@@ -831,26 +845,23 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         key=grid_key,
     )
 
-    # Odczyt selekcji z tabeli:
-    selected_row = None
+    # Odczyt selekcji z tabeli: PRZEKAŻEMY GŁOS TYLKO PRZY NOWEJ SELEKCJI
+    current_table_select = None
     if isinstance(grid_response, dict):
         sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
-        if sel: selected_row = sel[0]
+        if sel:
+            current_table_select = sel[0]["Ticker"]
     elif hasattr(grid_response, "selected_rows"):
         sel = getattr(grid_response, "selected_rows", []) or []
-        if sel: selected_row = sel[0]
+        if sel:
+            current_table_select = sel[0]["Ticker"]
 
-    # >>> NEW: tabela nadpisuje symbol TYLKO gdy faktycznie kliknięto w tabeli
-    if selected_row:
-        st.session_state["selected_symbol"] = selected_row["Ticker"]
+    # przełącz na tabelę TYLKO, gdy wybór się zmienił
+    if current_table_select and current_table_select != st.session_state.get("last_table_selected"):
+        st.session_state["last_table_selected"] = current_table_select
+        st.session_state["selected_symbol"] = current_table_select
         st.session_state["selection_source"] = "table"
-    else:
-        # brak nowej selekcji z tabeli – NIE kasujemy wyboru z rankingu
-        # jeżeli obecny selected_symbol nie istnieje już w df_res i źródło to "table", to go czyścimy
-        if st.session_state.get("selection_source") == "table":
-            if st.session_state.get("selected_symbol") not in set(df_res["Ticker"]):
-                st.session_state["selected_symbol"] = None
-                st.session_state["selection_source"] = None
+    # w innym wypadku – nie nadpisuj wyboru z rankingu
 
     # -------- WYKRESY + PODSUMOWANIE PRO --------
     sym = st.session_state.get("selected_symbol")
