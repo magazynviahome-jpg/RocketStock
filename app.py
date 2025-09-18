@@ -30,13 +30,8 @@ st.markdown(
     .ag-theme-alpine .ag-header,.ag-theme-alpine .ag-root-wrapper{ border-radius:8px; }
     .ag-theme-alpine .ag-row.ag-row-selected{ background-color:rgba(124,58,237,.12)!important; }
     .ag-theme-alpine .ag-row-hover{ background-color:rgba(124,58,237,.08)!important; }
-
-    /* Ranking chips */
-    .chip{
-      background:#f5f3ff;border:1px solid #e9d5ff;color:#4c1d95; padding:6px 10px; border-radius:999px;
-      font-weight:600; font-size:13px; white-space:nowrap; display:inline-block;
-    }
-    .chip-wrap{ display:flex; flex-wrap:wrap; gap:8px; }
+    .chip{ background:#f5f3ff;border:1px solid #e9d5ff;color:#4c1d95; padding:6px 10px; border-radius:999px;
+           font-weight:600; font-size:13px; white-space:nowrap; display:inline-block; width:100%; text-align:center; }
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
     </style>
@@ -141,12 +136,11 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataF
 
 # =========================
 # SCORING DIAMENTÓW
-# (RSI w przedziale = twardo; warunek Close>EMA200 zależny od przełącznika)
+# (RSI w przedziale = twardo; Close>EMA200 sterowane przełącznikiem)
 # =========================
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
     if pd.isna(rsi) or rsi < rsi_min or rsi > rsi_max:
         return "–"
-
     pts = 0
     if mode == "Konserwatywny":
         if pd.notna(price) and pd.notna(ema200) and price > ema200: pts += 1
@@ -291,9 +285,118 @@ with st.sidebar:
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
 # =========================
-# SKAN
+# FUNKCJE RANKINGU + PODSUMOWANIA
+# =========================
+def _safe(val, default=None):
+    return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
+
+def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
+    close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
+    rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
+    volr = _safe(row.get("VolRatio")); avgv = _safe(row.get("AvgVolume"))
+    dist_score = 0.0
+    if close and ema200 and ema200>0:
+        dist = close/ema200 - 1.0
+        dist_score = max(0.0, min(dist, 0.10)) / 0.10  # cap 10% (możesz zmienić na 0.02)
+    rsi_score = 0.0
+    if rsi is not None:
+        mid = (rsi_min + rsi_max)/2.0
+        half_range = max(1.0, (rsi_max - rsi_min)/2.0)
+        rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
+    macd_score = 0.0
+    if macd is not None and macd_sig is not None:
+        diff = macd - macd_sig
+        macd_score = max(0.0, min(diff, 0.50))/0.50
+    volr_score = 0.0
+    if volr is not None:
+        volr_score = max(0.0, min(volr, 2.0))/2.0
+    liq_score = 0.0
+    if isinstance(avgv,(int,float)) and avgv:
+        if avgv >= 5_000_000: liq_score = 1.0
+        elif avgv >= 2_000_000: liq_score = 0.7
+        elif avgv >= 1_000_000: liq_score = 0.5
+        elif avgv > 0: liq_score = 0.2
+    return round((0.30*dist_score + 0.25*rsi_score + 0.25*macd_score + 0.15*volr_score + 0.05*liq_score)*100.0, 1)
+
+def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame(columns=["Ticker","Score"])
+    base = df.copy()
+    base = base[(base["Sygnał"]=="💎💎💎") & (base["FiltersOK"]==True)]
+    if base.empty: return pd.DataFrame(columns=["Ticker","Score"])
+    base["Score"] = base.apply(lambda r: rank_score_row(r, rsi_min, rsi_max), axis=1)
+    def rsi_dev(r):
+        rv = _safe(r.get("RSI"))
+        if rv is None: return 999.0
+        mid = (rsi_min+rsi_max)/2.0
+        return abs(rv-mid)
+    base["_dev"] = base.apply(rsi_dev, axis=1)
+    base = base.sort_values(["Score","AvgVolume","_dev","Ticker"], ascending=[False, False, True, True]).drop(columns=["_dev"])
+    return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
+
+def summarize_row_rich(row, rsi_min: int, rsi_max: int) -> str:
+    # Snapshot
+    tck = row.get("Ticker","?")
+    di  = row.get("Sygnał","–")
+    close = row.get("Close"); rsi=row.get("RSI"); ema=row.get("EMA200")
+    vr=row.get("VolRatio"); av=row.get("AvgVolume"); macd=row.get("MACD"); sig=row.get("MACD_signal")
+    dist_txt = "—"
+    if pd.notna(close) and pd.notna(ema) and ema:
+        dist = (close/ema - 1.0)*100
+        dist_txt = f"{dist:.2f}%"
+    vr_txt = f"{vr:.2f}" if pd.notna(vr) else "—"
+    rsi_txt = f"{rsi:.1f}" if pd.notna(rsi) else "—"
+    macd_delta = (macd - sig) if pd.notna(macd) and pd.notna(sig) else None
+    macd_txt = f"{macd_delta:.3f}" if macd_delta is not None else "—"
+
+    # Powody / Ryzyka
+    reasons = []
+    if pd.notna(close) and pd.notna(ema) and close>ema: reasons.append("✅ **Trend:** cena > EMA200.")
+    elif pd.notna(close) and pd.notna(ema): reasons.append("⚠️ **Trend:** cena ≤ EMA200.")
+    if macd_delta is not None and macd_delta>=0: reasons.append("✅ **Momentum:** MACD > signal.")
+    elif macd_delta is not None: reasons.append("⚠️ **Momentum:** MACD < signal.")
+    if pd.notna(rsi): reasons.append(f"✅ **RSI:** {rsi:.1f} w Twoim zakresie ({rsi_min}–{rsi_max}).")
+    if pd.notna(vr):
+        lab = "bardzo wysoki" if vr>=2.0 else ("wysoki" if vr>=1.5 else ("normalny" if vr>=1.0 else "niski"))
+        reasons.append(f"✅ **Wolumen:** {lab} (VR={vr:.2f}).")
+    if pd.notna(row.get("DistEMA200Pct")) and row["DistEMA200Pct"]>0:
+        reasons.append(f"📏 **Odległość od EMA200:** {row['DistEMA200Pct']:.2f}%.")
+
+    risks = []
+    if pd.notna(rsi) and rsi >= (rsi_max - 1):
+        risks.append("⚠️ RSI blisko górnej krawędzi zakresu → możliwy oddech.")
+    if pd.notna(row.get("DistEMA200Pct")) and row["DistEMA200Pct"]>15:
+        risks.append("⚠️ Spory dystans nad EMA200 (>15%) — ryzyko wyciszenia.")
+
+    # Poziomy (przybliżone)
+    levels = []
+    ema50 = row.get("EMA50")
+    if pd.notna(ema50): levels.append(f"EMA50: **{ema50:.2f}**")
+    if pd.notna(ema):   levels.append(f"EMA200: **{ema:.2f}**")
+    if pd.notna(row.get("RoomToHighPct")):
+        levels.append(f"Od 3m High: **{row['RoomToHighPct']:.2f}%**")
+
+    plan = "🎯 Wejście po kontynuacji powyżej ostatniego high; inwalidacja: MACD < signal lub powrót < EMA50."
+
+    md = []
+    md.append(f"**{tck} — {di}**  |  Close **{close:.2f}**  |  RSI **{rsi_txt}**  |  +**{dist_txt}** vs EMA200  |  VR **{vr_txt}**  |  ΔMACD **{macd_txt}**")
+    if reasons:
+        md.append("\n**Dlaczego na liście:**")
+        md += [f"- {x}" for x in reasons]
+    if risks:
+        md.append("\n**Ryzyka / na co uważać:**")
+        md += [f"- {x}" for x in risks]
+    if levels:
+        md.append("\n**Kluczowe poziomy:** " + "  ·  ".join(levels))
+    md.append("\n**Plan:** " + plan)
+    return "\n".join(md)
+
+# =========================
+# SKAN (reset wyboru + pipeline)
 # =========================
 if run_scan:
+    # reset wyboru, żeby nie trzymać starego tickera
+    st.session_state.selected_symbol = None
+
     tickers_df = get_tickers(source)
     if tickers_df is None or tickers_df.empty:
         st.error("Brak tickerów do skanowania.")
@@ -324,10 +427,10 @@ if run_scan:
                     di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                         macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
-                # Dodatkowe wyliczenia do filtrów
+                # Filtry opcjonalne
                 gap_ok = True
-                if f_gap_on and pd.notna(last.get("GapUpPct")):
-                    gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
+                if 'GapUpPct' in last and pd.notna(last.get("GapUpPct")) and st.session_state.get('f_gap_on', None) is not None:
+                    pass  # (pozostawione – logika niżej)
 
                 maxdist_ok = True
                 if f_maxdist_on and pd.notna(last.get("DistEMA200Pct")):
@@ -380,6 +483,9 @@ if run_scan:
                 if f_resist_on and pd.notna(last.get("RoomToHighPct")):
                     resist_ok = (float(last.get("RoomToHighPct")) >= float(f_resist_min))
 
+                if f_gap_on and pd.notna(last.get("GapUpPct")):
+                    gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
+
                 passed_all_filters = all([
                     gap_ok, maxdist_ok, slope_ok, align_ok, macd_fresh_ok, rsi_up_ok,
                     minavg_ok, vr_ok, minprice_ok, atr_ok, hhhl_ok, resist_ok
@@ -411,88 +517,18 @@ if run_scan:
         st.session_state.scan_results = pd.DataFrame(results)
 
 # =========================
-# RANKING (bez AI)
-# =========================
-def _safe(val, default=None):
-    return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
-
-def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
-    close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
-    rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
-    volr = _safe(row.get("VolRatio")); avgv = _safe(row.get("AvgVolume"))
-    # 1) dystans do EMA200 (cap 10%)
-    dist_score = 0.0
-    if close and ema200 and ema200>0:
-        dist = close/ema200 - 1.0
-        dist_score = max(0.0, min(dist, 0.10)) / 0.10
-    # 2) RSI blisko środka
-    rsi_score = 0.0
-    if rsi is not None:
-        mid = (rsi_min + rsi_max)/2.0
-        half_range = max(1.0, (rsi_max - rsi_min)/2.0)
-        rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
-    # 3) MACD siła
-    macd_score = 0.0
-    if macd is not None and macd_sig is not None:
-        diff = macd - macd_sig
-        macd_score = max(0.0, min(diff, 0.50))/0.50
-    # 4) VolRatio (cap)
-    volr_score = 0.0
-    if volr is not None:
-        volr_score = max(0.0, min(volr, 2.0))/2.0
-    # 5) Płynność
-    liq_score = 0.0
-    if isinstance(avgv,(int,float)) and avgv:
-        if avgv >= 5_000_000: liq_score = 1.0
-        elif avgv >= 2_000_000: liq_score = 0.7
-        elif avgv >= 1_000_000: liq_score = 0.5
-        elif avgv > 0: liq_score = 0.2
-    return round((0.30*dist_score + 0.25*rsi_score + 0.25*macd_score + 0.15*volr_score + 0.05*liq_score)*100.0, 1)
-
-def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> pd.DataFrame:
-    if df is None or df.empty: return pd.DataFrame(columns=["Ticker","Score"])
-    base = df.copy()
-    base = base[(base["Sygnał"]=="💎💎💎") & (base["FiltersOK"]==True)]
-    if base.empty: return pd.DataFrame(columns=["Ticker","Score"])
-    base["Score"] = base.apply(lambda r: rank_score_row(r, rsi_min, rsi_max), axis=1)
-    def rsi_dev(r):
-        rv = _safe(r.get("RSI"))
-        if rv is None: return 999.0
-        mid = (rsi_min+rsi_max)/2.0
-        return abs(rv-mid)
-    base["_dev"] = base.apply(rsi_dev, axis=1)
-    base = base.sort_values(["Score","AvgVolume","_dev","Ticker"], ascending=[False, False, True, True]).drop(columns=["_dev"])
-    return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
-
-def summarize_row_plain(row, rsi_min: int, rsi_max: int) -> str:
-    close = row.get("Close"); ema = row.get("EMA200"); rsi = row.get("RSI")
-    macd = row.get("MACD"); sig = row.get("MACD_signal"); vr = row.get("VolRatio"); av = row.get("AvgVolume")
-    dist_txt = ""
-    if pd.notna(close) and pd.notna(ema) and ema:
-        dist = (close/ema - 1.0)*100
-        dirl = "powyżej" if dist >= 0 else "poniżej"
-        dist_txt = f"Cena {dirl} EMA200 o {dist:.2f}%."
-    rsi_txt = f"RSI {rsi:.1f} w Twoim przedziale ({rsi_min}–{rsi_max})." if pd.notna(rsi) else ""
-    macd_txt = ""
-    if pd.notna(macd) and pd.notna(sig):
-        diff = macd - sig
-        macd_txt = f"MACD {'powyżej' if diff>=0 else 'poniżej'} sygnału (Δ={diff:.3f})."
-    vr_txt = ""
-    if pd.notna(vr):
-        lab = "bardzo wysoki" if vr>=2.0 else ("wysoki" if vr>=1.5 else ("normalny" if vr>=1.0 else ("niski" if vr>=0.5 else "bardzo niski")))
-        vr_txt = f"Wolumen relatywny {lab} (VR={vr:.2f})."
-    liq_txt = ""
-    if pd.notna(av):
-        lab = "wysoka" if av>=5_000_000 else ("dobra" if av>=2_000_000 else ("umiarkowana" if av>=1_000_000 else "niewielka"))
-        liq_txt = f"Śr. wolumen: {int(av):,} ({lab}).".replace(","," ")
-    parts = [p for p in [dist_txt,rsi_txt,macd_txt,vr_txt,liq_txt] if p]
-    return " ".join(parts)
-
-# =========================
 # WIDOK + TABELA + RANKING + WYKRESY
 # =========================
-if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
-    df_res = st.session_state.scan_results.copy()
+# przygotuj stałe kolumny tabeli (żeby nigdy nie znikała)
+view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio"]
+
+df_res = st.session_state.get("scan_results", pd.DataFrame())
+if df_res is None or df_res.empty:
+    # pusty placeholder DF z tymi samymi kolumnami
+    df_view = pd.DataFrame(columns=view_cols)
+    rank_df = pd.DataFrame(columns=["Ticker","Score"])
+else:
+    df_res = df_res.copy()
 
     # Klasy wolumenu (do widoku)
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
@@ -513,114 +549,140 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
     # Filtr wolumenu (widok)
+    vol_filter = st.session_state.get("vol_filter", "Wszystkie") or "Wszystkie"
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
     # Widok tylko 💎💎💎 (opcjonalnie)
+    only_three = st.session_state.get("only_three", False)
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
-    # ===== RANKING (poziomo, siatka) =====
+    # RANKING (siatka)
+    enable_rank = st.session_state.get("enable_rank", True)
+    rsi_min = st.session_state.get("rsi_min", 30)
+    rsi_max = st.session_state.get("rsi_max", 50)
+    top_n = st.session_state.get("top_n", 10)
+
     if enable_rank:
         rank_df = build_ranking(st.session_state.scan_results, rsi_min, rsi_max, top_n)
         st.session_state.rank_df = rank_df
         st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
-
         if rank_df.empty:
             st.info("Brak kandydatów (💎💎💎 + aktywne filtry). Zmień parametry.")
         else:
-            # liczba chipów w wierszu zależna od wyboru
+            rank_layout = st.session_state.get("rank_layout", "Kompakt (6/wiersz)")
             per_row = 6 if "Kompakt" in rank_layout else (4 if "Średni" in rank_layout else 3)
-            # rysujemy wiersze po 'per_row' przycisków
             for start in range(0, len(rank_df), per_row):
                 row_slice = rank_df.iloc[start:start+per_row]
                 cols = st.columns(len(row_slice))
                 for col, (_, rr) in zip(cols, row_slice.iterrows()):
                     with col:
                         label = f"{start + rr.name + 1}. {rr['Ticker']} · {rr['Score']:.1f}"
-                        if st.button(label, key=f"chip_{rr['Ticker']}", use_container_width=True):
+                        if st.button(label, key=f"chip_{start}_{rr['Ticker']}", use_container_width=True):
                             st.session_state.selected_symbol = rr["Ticker"]
+    else:
+        rank_df = pd.DataFrame(columns=["Ticker","Score"])
 
-    # ===== TABELA =====
-    view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio"]
-    df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])].reset_index(drop=True)
-
+    # Widok tabeli (bez 1-diamentowych)
+    df_view = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])].copy()
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
-    df_res["Rank"] = df_res["Sygnał"].apply(_rank)
-    df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
+    if not df_view.empty:
+        df_view["Rank"] = df_view["Sygnał"].apply(_rank)
+        df_view = df_view.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
+    # zapewnij brakujących kolumn
+    for c in view_cols:
+        if c not in df_view.columns: df_view[c] = None
+    df_view = df_view[view_cols]
 
-    st.subheader("📋 Wyniki skanera")
-    st.write(
-        f"<span class='pill'>Wyników: <b>{len(df_res)}</b></span>"
-        f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
-        f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
-        f"<span class='pill'>Okres: <b>{period}</b></span>"
-        f"<span class='pill'>Close>EMA200: <b>{'ON' if require_price_above_ema200 else 'OFF'}</b></span>",
-        unsafe_allow_html=True
-    )
+# Nagłówek info
+require_price_above_ema200 = st.session_state.get("require_price_above_ema200", True)
+period = st.session_state.get("period", "1y")
+signal_mode = st.session_state.get("signal_mode", "Umiarkowany")
+st.subheader("📋 Wyniki skanera")
+st.write(
+    f"<span class='pill'>Wyników: <b>{len(df_view)}</b></span>"
+    f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
+    f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
+    f"<span class='pill'>Okres: <b>{period}</b></span>"
+    f"<span class='pill'>Close>EMA200: <b>{'ON' if require_price_above_ema200 else 'OFF'}</b></span>",
+    unsafe_allow_html=True
+)
 
-    gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
-    gb.configure_selection('single', use_checkbox=False)
-    gb.configure_grid_options(
-        rowHeight=36,
-        suppressPaginationPanel=True,
-        domLayout='normal'
-    )
-    grid_options = gb.build()
-    grid_response = AgGrid(
-        df_res[view_cols],
-        gridOptions=grid_options,
-        update_mode=GridUpdateMode.SELECTION_CHANGED,
-        theme='alpine',
-        height=table_height,                      # << suwak wysokości
-        fit_columns_on_grid_load=bool(fit_cols),  # << dopasuj kolumny do szerokości
-    )
+# AgGrid — stały key + czyszczenie opcji
+gb = GridOptionsBuilder.from_dataframe(df_view)
+gb.configure_selection('single', use_checkbox=False)
+gb.configure_grid_options(
+    rowHeight=36,
+    suppressPaginationPanel=True,
+    domLayout='normal'
+)
+grid_options = gb.build()
+# usuń ewentualny nieobsługiwany klucz
+grid_options.pop("preSelectAllRows", None)
 
-    # wybór z tabeli
-    if isinstance(grid_response, dict):
-        sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
-        if sel:
-            st.session_state.selected_symbol = sel[0]["Ticker"]
-    elif hasattr(grid_response, "selected_rows"):
-        sel = getattr(grid_response, "selected_rows", []) or []
-        if sel:
-            st.session_state.selected_symbol = sel[0]["Ticker"]
+fit_cols = st.session_state.get("fit_cols", True)
+table_height = st.session_state.get("table_height", 560)
 
-    # -------- WYKRESY + PODSUMOWANIE --------
-    sym = st.session_state.get("selected_symbol")
-    if sym:
-        st.markdown("---")
-        st.subheader(f"📈 {sym} — podgląd wykresów")
+grid_response = AgGrid(
+    df_view,
+    gridOptions=grid_options,
+    update_mode=GridUpdateMode.SELECTION_CHANGED,
+    theme='alpine',
+    height=int(table_height),
+    fit_columns_on_grid_load=bool(fit_cols),
+    key="scan_table",  # <<< STABILNY KLUCZ
+)
 
-        with st.spinner(f"Ładuję wykresy dla {sym}…"):
-            df_sel = get_stock_df(sym, period=period, vol_window=vol_window)
+# wybór z tabeli
+selected_from_table = None
+if isinstance(grid_response, dict):
+    sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
+    if sel:
+        selected_from_table = sel[0].get("Ticker")
+elif hasattr(grid_response, "selected_rows"):
+    sel = getattr(grid_response, "selected_rows", []) or []
+    if sel:
+        selected_from_table = sel[0].get("Ticker")
 
-        if df_sel is None or df_sel.empty:
-            st.error("Nie udało się pobrać danych wykresu.")
+if selected_from_table:
+    st.session_state.selected_symbol = selected_from_table
+
+# -------- WYKRESY + PODSUMOWANIE --------
+sym = st.session_state.get("selected_symbol")
+if sym:
+    st.markdown("---")
+    st.subheader(f"📈 {sym} — podgląd wykresów")
+
+    # ponownie pobierz dane dla wykresów (ten sam okres/okno)
+    df_sel = get_stock_df(sym, period=period, vol_window=st.session_state.get("vol_window", 20))
+    if df_sel is None or df_sel.empty:
+        st.error("Nie udało się pobrać danych wykresu.")
+    else:
+        last = df_sel.iloc[-1]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
+        m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
+        dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
+        m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
+        macd_cross_here = macd_bullish_cross_recent(df_sel, st.session_state.get("macd_lookback", 3))
+        vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), st.session_state.get("use_volume", True))
+        di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                                 macd_cross_here, vol_ok_here, st.session_state.get("signal_mode","Umiarkowany"),
+                                 rsi_min, rsi_max)
+        m4.metric("Sygnał", di_here)
+
+        st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
+        st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
+        st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
+
+        # bogate podsumowanie
+        base_row = st.session_state.scan_results
+        base_row = base_row[base_row["Ticker"] == sym]
+        st.markdown("### 🧭 Podsumowanie")
+        if not base_row.empty:
+            st.markdown(summarize_row_rich(base_row.iloc[0], rsi_min, rsi_max))
         else:
-            last = df_sel.iloc[-1]
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
-            m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
-            dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
-            m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
-            macd_cross_here = macd_bullish_cross_recent(df_sel, macd_lookback)
-            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
-            di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                                     macd_cross_here, vol_ok_here, signal_mode, rsi_min, rsi_max)
-            m4.metric("Sygnał", di_here)
-
-            st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
-            st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
-            st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
-
-            st.markdown("### 🤖 Podsumowanie (bez AI)")
-            base_row = st.session_state.scan_results
-            base_row = base_row[base_row["Ticker"] == sym]
-            if not base_row.empty:
-                text = summarize_row_plain(base_row.iloc[0], rsi_min, rsi_max)
-                st.write(text)
-            else:
-                st.write("Brak danych do podsumowania.")
+            st.info("Brak danych do podsumowania dla wybranej spółki.")
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
