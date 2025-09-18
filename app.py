@@ -10,26 +10,36 @@ import plotly.graph_objects as go
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # =========================
-# USTAWIENIA I WYGLĄD
+# KONFIG / WYGLĄD (fiolet)
 # =========================
 st.set_page_config(
-    page_title="🚀 RocketStock – NASDAQ Scanner",
-    page_icon="🚀",
+    page_title="RocketStock – NASDAQ Scanner",
+    page_icon="💎",
     layout="wide"
 )
 
+# Fioletowy akcent + lekkie poprawki UI (bez motywu w config.toml)
 st.markdown(
     """
     <style>
-    .muted {color:#6b7280;}
-    .pill {padding:2px 8px;border-radius:999px;background:#f3f4f6;margin-right:6px;}
+    :root {
+      --primary-color: #7c3aed; /* fiolet */
+    }
+    .stButton>button, .stDownloadButton>button {
+      border-radius: 10px !important;
+      font-weight: 600 !important;
+    }
+    .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
+    .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper {
+      border-radius: 8px;
+    }
+    /* Ukryj tytuł i opis – nie renderujemy ich w ogóle w kodzie */
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("🚀 RocketStock")
-st.caption("Skaner NASDAQ z RSI 30–50, EMA200, MACD i wolumenem — diamentowy scoring 💎. (Zmiany tylko w UX)")
+# (Na Twoją prośbę: brak st.title / st.caption – czysto na górze)
 
 # =========================
 # STAŁE / CACHE
@@ -154,18 +164,17 @@ def vol_confirmation(volume, avg_volume, require: bool) -> bool:
 def diamond_rank(di: str) -> int:
     return 0 if di == "–" else len(di)
 
-def volume_label(volume, avg_volume) -> str:
-    """Opis wolumenu zamiast liczby."""
-    if pd.isna(volume) or pd.isna(avg_volume) or avg_volume <= 0:
+# Opis wolumenu (używane do tabeli, po przypisaniu kwantyli)
+def volume_label_from_ratio_qtile(q) -> str:
+    if pd.isna(q):
         return "—"
-    ratio = float(volume) / float(avg_volume)
-    if ratio > 2.0:
+    if q >= 0.80:
         return "Bardzo wysoki"
-    elif ratio > 1.5:
+    elif q >= 0.60:
         return "Wysoki"
-    elif ratio > 1.0:
+    elif q >= 0.40:
         return "Normalny"
-    elif ratio > 0.5:
+    elif q >= 0.20:
         return "Niski"
     else:
         return "Bardzo niski"
@@ -185,7 +194,7 @@ def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
     ))
     fig.update_layout(
         height=460, margin=dict(l=10, r=10, t=40, b=10),
-        title=f"📊 {ticker} — Świece + EMA200", xaxis_rangeslider_visible=False
+        title=f"{ticker} — Świece + EMA200", xaxis_rangeslider_visible=False
     )
     return fig
 
@@ -197,7 +206,7 @@ def plot_rsi(df: pd.DataFrame, ticker: str, bars: int = 180):
     fig.add_hline(y=70, line_dash="dash")
     fig.update_layout(
         height=240, margin=dict(l=10, r=10, t=40, b=10),
-        title=f"📈 {ticker} — RSI(14)", yaxis=dict(range=[0, 100])
+        title=f"{ticker} — RSI(14)", yaxis=dict(range=[0, 100])
     )
     return fig
 
@@ -213,7 +222,17 @@ with st.sidebar:
         use_volume = st.checkbox("Wymagaj potwierdzenia wolumenem", value=True)
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
-        show_only_signals = st.checkbox("Pokaż tylko sygnały (min. 💎)", value=True)
+
+        # Nowy filtr sygnałów
+        only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
+
+        # Filtr wolumenu (po kategoriach relatywnych)
+        vol_filter = st.selectbox(
+            "Filtr wolumenu",
+            ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"],
+            index=0
+        )
+
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 3500, 300, step=50)
 
         st.markdown("---")
@@ -246,6 +265,12 @@ if run_scan:
                     last.get("Close"), last.get("EMA200"), last.get("RSI"),
                     macd_cross, vol_ok, signal_mode, rsi_min, rsi_max
                 )
+
+                # zapisz też ratio do późniejszej klasyfikacji „Bardzo wysoki …”
+                vol_ratio = None
+                if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and last.get("AvgVolume") > 0:
+                    vol_ratio = float(last.get("Volume")) / float(last.get("AvgVolume"))
+
                 results.append({
                     "Ticker": t,
                     "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
@@ -255,6 +280,7 @@ if run_scan:
                     "MACD_signal": round(float(last.get("MACD_signal")), 4) if pd.notna(last.get("MACD_signal")) else None,
                     "Volume": int(last.get("Volume")) if pd.notna(last.get("Volume")) else None,
                     "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
+                    "VolRatio": vol_ratio,
                     "Sygnał": di
                 })
             progress.progress(i/len(tickers_list))
@@ -266,17 +292,51 @@ if run_scan:
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # opis wolumenu (zamiast liczby)
-    df_res["Wolumen"] = df_res.apply(lambda r: volume_label(r.get("Volume"), r.get("AvgVolume")), axis=1)
-    # porządek kolumn do prezentacji
+    # 1) Usuń 1-diamentowe z widoku ZAWSZE (Twoje życzenie)
+    df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])]
+
+    # 2) Jeśli zaznaczono „tylko 💎💎💎” – filtruj
+    if 'only_three' in st.session_state or True:
+        # (użyj zmiennej ze scope'u sidebaru)
+        pass
+    # (prosty warunek – bezpośrednio)
+    # Tu korzystamy z wartości only_three z sidebaru
+    if 'only_three' in locals() and only_three:
+        df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
+
+    # 3) Klasy wolumenu oparte o KWANTYLE z aktualnych wyników
+    #    VolRatio może mieć None → ignorujemy przy liczeniu quantyli
+    ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
+    if ratio_series.notna().sum() >= 5:
+        # percentrank (0..1) – ranga względem innych
+        qtiles = ratio_series.rank(pct=True)
+        df_res["VolRankPct"] = qtiles
+        df_res["Wolumen"] = df_res["VolRankPct"].apply(volume_label_from_ratio_qtile)
+    else:
+        # fallback: bez rankingu (opis względny po progach absolutnych)
+        def _label_fallback(row):
+            v, a = row.get("Volume"), row.get("AvgVolume")
+            if pd.isna(v) or pd.isna(a) or a <= 0:
+                return "—"
+            r = float(v) / float(a)
+            if r > 2.0: return "Bardzo wysoki"
+            if r > 1.5: return "Wysoki"
+            if r > 1.0: return "Normalny"
+            if r > 0.5: return "Niski"
+            return "Bardzo niski"
+        df_res["Wolumen"] = df_res.apply(_label_fallback, axis=1)
+
+    # 4) Filtr wolumenu wg wybranej kategorii
+    if 'vol_filter' in locals() and vol_filter != "Wszystkie":
+        df_res = df_res[df_res["Wolumen"] == vol_filter]
+
+    # 5) Kolumny do widoku
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen"]
 
-    # filtr widoku — tylko sygnały czy wszystko
-    if show_only_signals:
-        df_res = df_res[df_res["Sygnał"] != "–"]
-
-    # sortowanie wg siły sygnału
-    df_res["Rank"] = df_res["Sygnał"].apply(diamond_rank)
+    # 6) Sort wg siły sygnału (💎💎💎 > 💎💎 > –) i alfabet
+    def _rank(di: str) -> int:
+        return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
+    df_res["Rank"] = df_res["Sygnał"].apply(_rank)
     df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"])
 
     st.subheader("📋 Wyniki skanera")
@@ -290,7 +350,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
 
     # -------- AgGrid: kliknij wiersz, wybierz spółkę --------
     gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
-    gb.configure_selection('single', use_checkbox=False)  # pojedynczy wybór po kliknięciu
+    gb.configure_selection('single', use_checkbox=False)
     gb.configure_pagination(paginationAutoPageSize=True)
     gb.configure_grid_options(rowHeight=36)
     grid_options = gb.build()
@@ -304,21 +364,15 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         fit_columns_on_grid_load=True,
     )
 
-    # --- BEZPIECZNY ODBIÓR ZAZNACZENIA ---
+    # --- bezpieczny odbiór zaznaczenia ---
     selected_row = None
     selected_rows = []
-
     if isinstance(grid_response, dict):
         selected_rows = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
     elif hasattr(grid_response, "selected_rows"):
         selected_rows = getattr(grid_response, "selected_rows", []) or []
-
     if selected_rows:
         selected_row = selected_rows[0]
-
-    # (opcjonalnie) automatycznie wybierz pierwszy wiersz, jeśli nic nie zaznaczono
-    # if not selected_row and not df_res.empty:
-    #     selected_row = df_res[view_cols].iloc[0].to_dict()
 
     # -------- Wykresy pod tabelą dla wybranej spółki --------
     if selected_row:
@@ -349,4 +403,4 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
 
 else:
-    st.info("Kliknij **🚀 Uruchom skaner** w panelu bocznym, aby rozpocząć.")
+    st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
