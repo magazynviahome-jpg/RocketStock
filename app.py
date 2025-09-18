@@ -31,12 +31,6 @@ st.markdown(
     .ag-theme-alpine .ag-row.ag-row-selected{ background-color:rgba(124,58,237,.12)!important; }
     .ag-theme-alpine .ag-row-hover{ background-color:rgba(124,58,237,.08)!important; }
 
-    /* Ranking chips */
-    .chip{
-      background:#f5f3ff;border:1px solid #e9d5ff;color:#4c1d95; padding:6px 10px; border-radius:999px;
-      font-weight:600; font-size:13px; white-space:nowrap; display:inline-block;
-    }
-    .chip-wrap{ display:flex; flex-wrap:wrap; gap:8px; }
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
     </style>
@@ -109,16 +103,13 @@ def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
     df["AvgVolume"] = df["Volume"].rolling(vol_window).mean()
     atr = ta.volatility.AverageTrueRange(df["High"], df["Low"], df["Close"], window=14)
     df["ATR"] = atr.average_true_range()
-    # pomocnicze
     df["PrevClose"] = df["Close"].shift(1)
     df["GapUpPct"] = (df["Open"] - df["PrevClose"]) / df["PrevClose"] * 100.0
     df["EMA200_Slope5"] = df["EMA200"].diff().rolling(5).mean()
     df["DistEMA200Pct"] = (df["Close"] / df["EMA200"] - 1.0) * 100.0
     df["RSI_Up"] = df["RSI"] >= df["RSI"].shift(1)
-    # 3-mies. high (ok. 63 sesje)
     df["High_3m"] = df["High"].rolling(63, min_periods=1).max()
     df["RoomToHighPct"] = (df["High_3m"] - df["Close"]) / df["Close"] * 100.0
-    # prosta struktura HH/HL (ostatnie 3 świece)
     df["HH3"] = (df["High"] > df["High"].shift(1)) & (df["High"].shift(1) > df["High"].shift(2))
     df["HL3"] = (df["Low"]  > df["Low"].shift(1))  & (df["Low"].shift(1)  > df["Low"].shift(2))
     return df
@@ -236,18 +227,20 @@ with st.sidebar:
         require_price_above_ema200 = st.checkbox("Wymagaj Close > EMA200", value=True)
 
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"], index=0)
-        scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 3500, 300, step=50)
+        # <<< podniesiony limit
+        scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
         st.markdown("---")
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
     with st.expander("Dodatkowe filtry (opcjonalne)", expanded=False):
+        # Wszystkie domyślnie OFF (zgodnie z prośbą)
         # Trend / impet
-        f_maxdist_on = st.checkbox("Max dystans do EMA200", value=True)
+        f_maxdist_on = st.checkbox("Max dystans do EMA200", value=False)
         f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
-        f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=True)
-        f_align_on = st.checkbox("Zgranie średnich: Close > EMA50 > EMA200", value=True)
+        f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
+        f_align_on = st.checkbox("Zgranie średnich: Close > EMA50 > EMA200", value=False)
         f_macd_fresh_on = st.checkbox("MACD świeży: cross w N dniach + histogram rośnie", value=False)
         colA, colB = st.columns(2)
         with colA:
@@ -258,14 +251,23 @@ with st.sidebar:
 
         st.markdown("---")
         # Wolumen / płynność
-        f_minavg_on = st.checkbox("Min. średni wolumen (AvgVolume)", value=True)
+        f_minavg_on = st.checkbox("Min. średni wolumen (AvgVolume)", value=False)
         f_minavg_val = st.number_input("— Min AvgVolume", 0, 50_000_000, 1_000_000, step=100_000)
-        f_vr_on = st.checkbox("Widełki VolRatio", value=True)
+        f_vr_on = st.checkbox("Widełki VolRatio", value=False)
         colV1, colV2 = st.columns(2)
         with colV1:
             f_vr_min = st.number_input("— VR min", 0.0, 10.0, 1.2, step=0.1, format="%.1f")
         with colV2:
             f_vr_max = st.number_input("— VR max (cap)", 0.5, 10.0, 3.0, step=0.1, format="%.1f")
+
+        st.markdown("---")
+        # Kapitalizacja (min–max, USD) — domyślnie OFF
+        f_mcap_on = st.checkbox("Filtr kapitalizacji (USD)", value=False)
+        colM1, colM2 = st.columns(2)
+        with colM1:
+            f_mcap_min = st.number_input("— MC min (USD)", 0.0, 5_000_000_000_000.0, 300_000_000.0, step=50_000_000.0, format="%.0f")
+        with colM2:
+            f_mcap_max = st.number_input("— MC max (USD)", 0.0, 5_000_000_000_000.0, 2_000_000_000_000.0, step=50_000_000.0, format="%.0f")
 
         st.markdown("---")
         # „Higiena wejścia”
@@ -288,9 +290,21 @@ with st.sidebar:
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
-# zapamiętaj bieżące parametry (potrzebne do wyliczeń wejścia)
+# zapamiętaj parametry (dla wyliczeń wejścia)
 st.session_state["period"] = period
 st.session_state["vol_window"] = vol_window
+
+# =========================
+# FUNDAMENTY — cache MC (używane TYLKO jeśli filtr MC jest ON)
+# =========================
+@st.cache_data(show_spinner=False, ttl=60*30)
+def get_market_cap_fast(ticker: str) -> Optional[float]:
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        mc = fi.get("market_cap")
+        return float(mc) if mc is not None else None
+    except Exception:
+        return None
 
 # =========================
 # SKAN
@@ -304,29 +318,34 @@ if run_scan:
         progress = st.progress(0); status = st.empty(); results = []
         for i, t in enumerate(tickers_list, start=1):
             status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
+
+            # — Filtr kapitalizacji (opcjonalnie, przed drogimi obliczeniami technicznymi) —
+            if f_mcap_on:
+                mc = get_market_cap_fast(t)
+                if mc is None or not (f_mcap_min <= mc <= f_mcap_max):
+                    progress.progress(i/len(tickers_list)); continue
+            else:
+                mc = None
+
             df = get_stock_df(t, period=period, vol_window=vol_window)
             if df is not None and not df.empty:
                 last = df.iloc[-1]
 
-                # Twarda bramka: RSI w przedziale
+                # Twarda bramka: RSI + (opcjonalnie) Close>EMA200
                 rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
-
-                # Warunek Close>EMA200: zależny od przełącznika
                 price_ok = True
                 if require_price_above_ema200:
                     price_ok = pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and (float(last.get("Close")) > float(last.get("EMA200")))
 
                 if not (rsi_ok and price_ok):
-                    di = "–"
-                    macd_cross = False
-                    vol_ok = False
+                    di = "–"; macd_cross = False; vol_ok = False
                 else:
                     vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
                     macd_cross = macd_bullish_cross_recent(df, macd_lookback)
                     di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                         macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
-                # Dodatkowe wyliczenia do filtrów
+                # Dodatkowe filtry (domyślnie OFF)
                 gap_ok = True
                 if f_gap_on and pd.notna(last.get("GapUpPct")):
                     gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
@@ -382,13 +401,15 @@ if run_scan:
                 if f_resist_on and pd.notna(last.get("RoomToHighPct")):
                     resist_ok = (float(last.get("RoomToHighPct")) >= float(f_resist_min))
 
+                # Kapitalizacja (jeśli ON): już przefiltrowane wyżej; dodaj flagę dla spójności
+                mcap_ok = True if not f_mcap_on else (mc is not None and (f_mcap_min <= mc <= f_mcap_max))
+
                 passed_all_filters = all([
                     gap_ok, maxdist_ok, slope_ok, align_ok, macd_fresh_ok, rsi_up_ok,
-                    minavg_ok, vr_ok, minprice_ok, atr_ok, hhhl_ok, resist_ok
+                    minavg_ok, vr_ok, minprice_ok, atr_ok, hhhl_ok, resist_ok, mcap_ok
                 ])
 
                 # Zapisz wynik
-                vol_ratio = vr_val
                 results.append({
                     "Ticker": t,
                     "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
@@ -400,11 +421,12 @@ if run_scan:
                     "MACD_hist": round(float(last.get("MACD_hist")), 4) if pd.notna(last.get("MACD_hist")) else None,
                     "Volume": int(last.get("Volume")) if pd.notna(last.get("Volume")) else None,
                     "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
-                    "VolRatio": vol_ratio,
+                    "VolRatio": vr_val,
                     "GapUpPct": round(float(last.get("GapUpPct")), 2) if pd.notna(last.get("GapUpPct")) else None,
                     "DistEMA200Pct": round(float(last.get("DistEMA200Pct")), 2) if pd.notna(last.get("DistEMA200Pct")) else None,
                     "ATR": round(float(last.get("ATR")), 4) if pd.notna(last.get("ATR")) else None,
                     "RoomToHighPct": round(float(last.get("RoomToHighPct")), 2) if pd.notna(last.get("RoomToHighPct")) else None,
+                    "MarketCap": float(mc) if mc is not None else None,
                     "FiltersOK": passed_all_filters,
                     "Sygnał": di
                 })
@@ -413,7 +435,7 @@ if run_scan:
         st.session_state.scan_results = pd.DataFrame(results)
 
 # =========================
-# RANKING (bez AI) — bez zmian
+# RANKING (bez AI)
 # =========================
 def _safe(val, default=None):
     return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
@@ -462,7 +484,7 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# FUNDEMENTY (yfinance) — helpery
+# FUNDEMENTY (yfinance) — helpery do podsumowania PRO
 # =========================
 def _fmt_money(x, cur="USD"):
     try:
@@ -494,8 +516,6 @@ def _pct_from(a, b) -> Optional[float]:
 def fetch_fundamentals(ticker: str) -> dict:
     tk = yf.Ticker(ticker)
     data = {"ticker": ticker}
-
-    # fast_info – lekkie i szybkie
     try:
         fi = tk.fast_info
     except Exception:
@@ -507,7 +527,6 @@ def fetch_fundamentals(ticker: str) -> dict:
     data["year_low"]  = fi.get("year_low")
     data["shares"] = fi.get("shares")
 
-    # info (może być cięższe – robimy bezpiecznie)
     info = {}
     try:
         info = tk.get_info()
@@ -516,7 +535,6 @@ def fetch_fundamentals(ticker: str) -> dict:
             info = tk.info
         except Exception:
             info = {}
-
     def g(key): return info.get(key)
 
     data.update({
@@ -524,29 +542,23 @@ def fetch_fundamentals(ticker: str) -> dict:
         "sector": g("sector"),
         "industry": g("industry"),
         "country": g("country"),
-
         "trailing_pe": g("trailingPE"),
         "forward_pe": g("forwardPE"),
         "peg_ratio": g("pegRatio"),
         "price_to_sales": g("priceToSalesTrailing12Months"),
         "price_to_book": g("priceToBook"),
-
         "enterprise_value": g("enterpriseValue"),
         "ebitda": g("ebitda"),
-
         "gross_margin": g("grossMargins"),
         "oper_margin": g("operatingMargins"),
         "profit_margin": g("profitMargins"),
-
         "free_cashflow": g("freeCashflow"),
         "total_debt": g("totalDebt"),
         "total_cash": g("totalCash"),
-
         "current_ratio": g("currentRatio"),
         "quick_ratio": g("quickRatio"),
     })
 
-    # earnings trend / price target / recommendations summary
     try:
         et = tk.earnings_trend
         if isinstance(et, pd.DataFrame) and not et.empty:
@@ -570,8 +582,6 @@ def fetch_fundamentals(ticker: str) -> dict:
             data["price_target_low"]  = float(pt["targetLow"].dropna().iloc[-1])
     except Exception:
         pass
-
-    # dywidendy i yield
     try:
         divs = tk.dividends
         if isinstance(divs, pd.Series) and not divs.empty:
@@ -581,8 +591,6 @@ def fetch_fundamentals(ticker: str) -> dict:
             data["div_yield"] = (ttm/lp) if (lp and lp>0) else None
     except Exception:
         pass
-
-    # earnings date (kalendarz)
     try:
         cal = tk.calendar
         if isinstance(cal, pd.DataFrame) and not cal.empty:
@@ -591,8 +599,6 @@ def fetch_fundamentals(ticker: str) -> dict:
                 data["earnings_date"] = pd.to_datetime(ed) if pd.notna(ed) else None
     except Exception:
         pass
-
-    # Historia do zwrotów / max drawdown
     try:
         hist = tk.history(period="1y", interval="1d", auto_adjust=False)
         if isinstance(hist, pd.DataFrame) and not hist.empty:
@@ -600,21 +606,15 @@ def fetch_fundamentals(ticker: str) -> dict:
             def ret(days):
                 if len(ser) < days+1: return None
                 return (ser.iloc[-1]/ser.iloc[-1-days]-1.0)*100.0
-            data["ret_1m"] = ret(21)
-            data["ret_3m"] = ret(63)
-            data["ret_6m"] = ret(126)
-            data["ret_1y"] = ret(252 if len(ser)>252 else len(ser)-1)
-            # max drawdown
-            roll_max = ser.cummax()
-            drawdown = ser/roll_max - 1.0
+            data["ret_1m"] = ret(21); data["ret_3m"] = ret(63)
+            data["ret_6m"] = ret(126); data["ret_1y"] = ret(252 if len(ser)>252 else len(ser)-1)
+            roll_max = ser.cummax(); drawdown = ser/roll_max - 1.0
             data["max_dd_1y"] = float(drawdown.min()*100.0)
     except Exception:
         pass
-
     return data
 
 def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
-    """Zwraca (entry_breakout, entry_pullback) wg ATR i EMA50/EMA200."""
     if df_full is None or df_full.empty: return (None, None)
     last = df_full.iloc[-1]
     close = last.get("Close"); atr = last.get("ATR")
@@ -629,33 +629,23 @@ def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[fl
     return (entry_breakout, entry_pullback)
 
 def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: int):
-    """Łączy technikę (z DF skanera) z fundamentami (yfinance) i pokazuje ceny wejścia."""
     base_row = df_src[df_src["Ticker"] == sym]
     if base_row.empty:
-        st.info("Brak danych do podsumowania.")
-        return
-
+        st.info("Brak danych do podsumowania."); return
     row = base_row.iloc[0]
-    # TECH snapshot
     close = row.get("Close"); rsi=row.get("RSI"); ema=row.get("EMA200"); ema50=row.get("EMA50")
     vr=row.get("VolRatio"); macd=row.get("MACD"); sig=row.get("MACD_signal")
     dist_pct = _pct_from(close, ema)
     macd_delta = (macd - sig) if pd.notna(macd) and pd.notna(sig) else None
-
-    # ENTRY ceny (na bazie pełnych danych technicznych)
     df_full = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
     entry_break, entry_pull = compute_entries(df_full)
-
-    # FUNDEMENTY
     fn = fetch_fundamentals(sym)
     cur = fn.get("currency") or "USD"
 
-    # Nagłówek
     cap_txt = _fmt_money(fn.get("market_cap"), cur)
     title_bits = [sym, fn.get("long_name") or "", f"• {fn.get('industry') or '—'}", f"• {fn.get('country') or '—'}", f"• MC: {cap_txt}"]
     st.markdown("**" + "  ".join([x for x in title_bits if x]) + f"  •  waluta: {cur}**")
 
-    # Snapshot TECH
     snap = []
     if pd.notna(close): snap.append(f"Close **${close:.2f}**")
     if pd.notna(rsi):   snap.append(f"RSI **{rsi:.1f}** (zakres {rsi_min}–{rsi_max})")
@@ -664,13 +654,10 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     if macd_delta is not None: snap.append(f"ΔMACD **{macd_delta:.3f}**")
     st.write(" · ".join(snap))
 
-    # Wejścia + rekomendacja
     reco = None
     if dist_pct is not None and pd.notna(rsi):
-        if dist_pct > 8 or rsi >= (rsi_max - 1):
-            reco = "Preferuj **pullback** (mniejszy pościg, lepszy RR)."
-        else:
-            reco = "Możliwy **breakout** nad lokalnym oporem."
+        if dist_pct > 8 or rsi >= (rsi_max - 1): reco = "Preferuj **pullback** (mniejszy pościg, lepszy RR)."
+        else: reco = "Możliwy **breakout** nad lokalnym oporem."
     entry_lines = []
     if entry_break is not None: entry_lines.append(f"**Wejście (breakout):** ${entry_break:.2f}  _(max(H20, Close) + 0.10×ATR)_")
     if entry_pull  is not None: entry_lines.append(f"**Wejście (pullback):** ${entry_pull:.2f}  _(EMA bazowa + 0.10×ATR)_")
@@ -679,7 +666,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         for ln in entry_lines: st.write(ln)
         if reco: st.write(reco)
 
-    # Fundamenty — sekcje
     with st.expander("📊 Wycena i jakość", expanded=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -732,7 +718,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         else:
             st.write("Dividend: **N/A**")
 
-    # Szybkie „Dlaczego tak / Ryzyka”
     reasons = []
     if pd.notna(close) and pd.notna(ema) and close>ema: reasons.append("✅ **Trend D1:** cena > EMA200.")
     if macd_delta is not None and macd_delta>=0: reasons.append("✅ **Momentum:** MACD > signal.")
@@ -740,13 +725,11 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     risks = []
     if dist_pct is not None and dist_pct>15: risks.append("⚠️ Spory dystans nad EMA200 (>15%).")
     if fn.get("earnings_date") is not None:
-        # prosta flaga: jeśli earnings w ~7 sesji (ok. 10 dni kal.)
         try:
             if (pd.to_datetime(fn["earnings_date"]) - pd.Timestamp.today()).days <= 10:
                 risks.append("⚠️ Blisko **earnings** — ryzyko luki.")
         except Exception:
             pass
-
     if reasons:
         st.markdown("**Dlaczego na liście:**")
         for r in reasons: st.write("- " + r)
@@ -760,7 +743,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # Klasy wolumenu (do widoku)
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -778,20 +760,16 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
-    # Filtr wolumenu (widok)
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
-
-    # Widok tylko 💎💎💎 (opcjonalnie)
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
-    # ===== RANKING (poziomo, siatka) =====
+    # ===== RANKING =====
     if enable_rank:
         rank_df = build_ranking(st.session_state.scan_results, rsi_min, rsi_max, top_n)
         st.session_state.rank_df = rank_df
         st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
-
         if rank_df.empty:
             st.info("Brak kandydatów (💎💎💎 + aktywne filtry). Zmień parametry.")
         else:
@@ -806,7 +784,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
                             st.session_state.selected_symbol = rr["Ticker"]
 
     # ===== TABELA =====
-    view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio"]
+    view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
     df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])].reset_index(drop=True)
 
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
@@ -823,14 +801,12 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         unsafe_allow_html=True
     )
 
+    # Stały key zmniejsza ryzyko "unregistered ComponentInstance"
     gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
     gb.configure_selection('single', use_checkbox=False)
-    gb.configure_grid_options(
-        rowHeight=36,
-        suppressPaginationPanel=True,
-        domLayout='normal'
-    )
+    gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')
     grid_options = gb.build()
+
     grid_response = AgGrid(
         df_res[view_cols],
         gridOptions=grid_options,
@@ -838,6 +814,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         theme='alpine',
         height=table_height,
         fit_columns_on_grid_load=bool(fit_cols),
+        key="scan_table",
     )
 
     # wybór z tabeli
