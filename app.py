@@ -226,7 +226,7 @@ with st.sidebar:
 
         # ===== NOWE: filtr dla 3 diamentów – cena powyżej EMA200 =====
         require_price_above_ema200_for_three = st.checkbox(
-            "Dla 💎💎💎 wymagaj Close > EMA200",
+            "Cena > EMA200",
             value=True
         )
 
