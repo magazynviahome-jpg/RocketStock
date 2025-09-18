@@ -6,6 +6,7 @@ import requests
 import streamlit as st
 import yfinance as yf
 import ta
+import plotly.graph_objects as go
 
 # =========================
 # USTAWIENIA I WYGLĄD
@@ -19,18 +20,16 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .small-note {opacity: 0.7; font-size: 0.9rem;}
-    .ok-badge {background:#e8f7ee; color:#1e7e34; padding:2px 8px; border-radius:12px; font-weight:600;}
-    .warn-badge {background:#fff4e5; color:#8a5a00; padding:2px 8px; border-radius:12px; font-weight:600;}
-    .error-badge {background:#fdecea; color:#b00020; padding:2px 8px; border-radius:12px; font-weight:600;}
     .muted {color:#6b7280;}
+    .pill {padding:2px 8px;border-radius:999px;background:#f3f4f6;margin-right:6px;}
+    .grid-buttons .stButton>button{height:54px;font-size:14px;line-height:1.1;padding:8px 10px;margin-bottom:6px}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 st.title("🚀 RocketStock")
-st.caption("Prosty skaner NASDAQ oparty o RSI 30–50, EMA200, MACD i wolumen — z diamentowym scoringiem 💎.")
+st.caption("Skaner NASDAQ z RSI 30–50, EMA200, MACD i wolumenem — diamentowy scoring 💎. (Zmiany tylko w UX)")
 
 # =========================
 # STAŁE / CACHE
@@ -72,7 +71,7 @@ def get_tickers(source: str) -> pd.DataFrame:
             st.caption(f"Źródło tickerów: NASDAQTrader (online). Liczba: **{len(t)}**")
             return t
         except Exception as e:
-            st.caption(f"<span class='warn-badge'>Uwaga</span> Nie udało się pobrać online: {e}. Wczytuję CSV…", unsafe_allow_html=True)
+            st.caption(f"⚠️ Nie udało się pobrać online: {e}. Wczytuję CSV…")
             return load_tickers_from_csv()
     else:
         t = load_tickers_from_csv()
@@ -85,6 +84,7 @@ def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
+    """LOGIKA BEZ ZMIAN: RSI, EMA200, MACD, średni wolumen."""
     if "Close" not in df.columns or "Volume" not in df.columns:
         raise ValueError("Dane muszą zawierać 'Close' i 'Volume'.")
     df["RSI"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
@@ -113,8 +113,8 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> pd.DataFrame | No
     except Exception:
         return None
 
+# --------- SCORING (bez zmian) ---------
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
-    """Konwersja warunków → diamenty, z 3 czułościami."""
     pts = 0
     if mode == "Konserwatywny":
         if pd.notna(price) and pd.notna(ema200) and price > ema200: pts += 1
@@ -155,17 +155,43 @@ def diamond_rank(di: str) -> int:
     return 0 if di == "–" else len(di)
 
 # =========================
-# SIDEBAR – JEDNO MIEJSCE: "USTAWIENIA"
-# (przeniesione WSZYSTKO do jednego expandera)
+# WYKRESY (Plotly) — tylko prezentacja, logika bez zmian
+# =========================
+def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
+    d = df.tail(bars)
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"],
+        name=ticker, showlegend=False
+    ))
+    fig.add_trace(go.Scatter(
+        x=d.index, y=d["EMA200"], name="EMA200", mode="lines"
+    ))
+    fig.update_layout(
+        height=460, margin=dict(l=10, r=10, t=40, b=10),
+        title=f"📊 {ticker} — Świece + EMA200", xaxis_rangeslider_visible=False
+    )
+    return fig
+
+def plot_rsi(df: pd.DataFrame, ticker: str, bars: int = 180):
+    d = df.tail(bars)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=d.index, y=d["RSI"], name="RSI(14)", mode="lines"))
+    # poziomy referencyjne
+    fig.add_hline(y=30, line_dash="dash")
+    fig.add_hline(y=70, line_dash="dash")
+    fig.update_layout(
+        height=240, margin=dict(l=10, r=10, t=40, b=10),
+        title=f"📈 {ticker} — RSI(14)", yaxis=dict(range=[0, 100])
+    )
+    return fig
+
+# =========================
+# SIDEBAR — „SKANER” + URUCHOM
 # =========================
 with st.sidebar:
-    with st.expander("Ustawienia", expanded=True):
-        # To, co wcześniej było w "Ustawieniach" (proste):
-        source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
-        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
-
-        st.markdown("---")
-        # To, co wcześniej było w "Ustawieniach zaawansowanych":
+    with st.expander("Skaner", expanded=True):
+        # parametry sygnału (bez zmian w logice)
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
@@ -175,105 +201,117 @@ with st.sidebar:
         show_only_signals = st.checkbox("Pokaż tylko sygnały (min. 💎)", value=True)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 3500, 300, step=50)
 
+        st.markdown("---")
+        # przeniesione na dół
+        source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
+        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)  # domyślnie 1y
+
+        # przycisk URUCHOM SKANER
+        run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
+
 # =========================
-# KARTY: SPÓŁKA / SKANER
+# URUCHOMIENIE SKANU → WYNIKI → WYBÓR SPÓŁKI → WYKRESY
 # =========================
-tab1, tab2 = st.tabs(["🔎 Spółka", "📈 Skaner"])
+if run_scan:
+    tickers_df = get_tickers(source)
+    if tickers_df is None or tickers_df.empty:
+        st.error("Brak tickerów do skanowania.")
+    else:
+        tickers_list = tickers_df["Ticker"].tolist()[:scan_limit]
+        progress = st.progress(0)
+        status = st.empty()
+        results = []
 
-# ---------- TAB 1: POJEDYNCZA SPÓŁKA ----------
-with tab1:
-    with st.form("single_form"):
-        c1, c2 = st.columns([2,1])
-        with c1:
-            single_ticker = st.text_input("Ticker", "AAPL")
-        with c2:
-            run_single = st.form_submit_button("Uruchom analizę")
-    if run_single:
-        with st.spinner(f"Pobieram dane dla {single_ticker}…"):
-            df = get_stock_df(single_ticker, period=period, vol_window=vol_window)
-        if df is None or df.empty:
-            st.error("Nie udało się pobrać danych lub policzyć wskaźników.")
-        else:
-            last = df.iloc[-1]
-            vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
-            macd_cross = macd_bullish_cross_recent(df, macd_lookback)
-            diamonds = score_diamonds(
-                last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                macd_cross, vol_ok, signal_mode, rsi_min, rsi_max
-            )
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
-            m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
-            dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
-            m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
-            m4.metric("Sygnał", diamonds)
-
-            st.line_chart(df["Close"], height=260)
-            with st.expander("Pokaż tabelę wskaźników (ostatnie 15 d.):", expanded=False):
-                st.dataframe(
-                    df[["Close","RSI","EMA200","MACD","MACD_signal","Volume","AvgVolume"]].tail(15),
-                    use_container_width=True
+        for i, t in enumerate(tickers_list, start=1):
+            status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
+            df = get_stock_df(t, period=period, vol_window=vol_window)
+            if df is not None and not df.empty:
+                last = df.iloc[-1]
+                vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
+                macd_cross = macd_bullish_cross_recent(df, macd_lookback)
+                di = score_diamonds(
+                    last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                    macd_cross, vol_ok, signal_mode, rsi_min, rsi_max
                 )
+                results.append({
+                    "Ticker": t,
+                    "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
+                    "RSI": round(float(last.get("RSI")), 2) if pd.notna(last.get("RSI")) else None,
+                    "EMA200": round(float(last.get("EMA200")), 2) if pd.notna(last.get("EMA200")) else None,
+                    "MACD": round(float(last.get("MACD")), 4) if pd.notna(last.get("MACD")) else None,
+                    "MACD_signal": round(float(last.get("MACD_signal")), 4) if pd.notna(last.get("MACD_signal")) else None,
+                    "Volume": int(last.get("Volume")) if pd.notna(last.get("Volume")) else None,
+                    "Sygnał": di
+                })
+            progress.progress(i/len(tickers_list))
 
-# ---------- TAB 2: SKANER NASDAQ ----------
-with tab2:
-    with st.form("scan_form"):
-        st.write("Przeskanuj listę NASDAQ według wybranych warunków i nadaj diamentowy scoring 💎.")
-        run_scan = st.form_submit_button("Uruchom skan teraz")
+        status.write("✅ Zakończono skan.")
+        # zapisz w sesji
+        st.session_state.scan_results = pd.DataFrame(results)
 
-    if run_scan:
-        tickers_df = get_tickers(source)
-        if tickers_df is None or tickers_df.empty:
-            st.error("Brak tickerów do skanowania.")
-        else:
-            tickers_list = tickers_df["Ticker"].tolist()[:scan_limit]
-            progress = st.progress(0)
-            status = st.empty()
-            results = []
+# Sekcja wyników (jeśli są w sesji)
+if "scan_results" in st.session_state:
+    df_res = st.session_state.scan_results.copy()
 
-            for i, t in enumerate(tickers_list, start=1):
-                status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
-                df = get_stock_df(t, period=period, vol_window=vol_window)
-                if df is not None and not df.empty:
-                    last = df.iloc[-1]
-                    vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
-                    macd_cross = macd_bullish_cross_recent(df, macd_lookback)
-                    di = score_diamonds(
-                        last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                        macd_cross, vol_ok, signal_mode, rsi_min, rsi_max
-                    )
-                    results.append({
-                        "Ticker": t,
-                        "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
-                        "RSI": round(float(last.get("RSI")), 2) if pd.notna(last.get("RSI")) else None,
-                        "EMA200": round(float(last.get("EMA200")), 2) if pd.notna(last.get("EMA200")) else None,
-                        "MACD": round(float(last.get("MACD")), 4) if pd.notna(last.get("MACD")) else None,
-                        "MACD_signal": round(float(last.get("MACD_signal")), 4) if pd.notna(last.get("MACD_signal")) else None,
-                        "Volume": int(last.get("Volume")) if pd.notna(last.get("Volume")) else None,
-                        "Sygnał": di
-                    })
-                progress.progress(i/len(tickers_list))
+    # filtr widoku — tylko sygnały czy wszystko
+    if show_only_signals:
+        df_res = df_res[df_res["Sygnał"] != "–"]
 
-            status.write("✅ Zakończono skan.")
-            if results:
-                df_res = pd.DataFrame(results)
-                if show_only_signals:
-                    df_res = df_res[df_res["Sygnał"] != "–"]
+    # sortowanie wg siły sygnału
+    df_res["Rank"] = df_res["Sygnał"].apply(diamond_rank)
+    df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"])
 
-                df_res["Rank"] = df_res["Sygnał"].apply(diamond_rank)
-                df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"])
+    st.subheader("📋 Wyniki skanera")
+    st.write(
+        f"<span class='pill'>Wyników: <b>{len(df_res)}</b></span>"
+        f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
+        f"<span class='pill'>Okres: <b>{period}</b></span>"
+        f"<span class='pill'>RSI: <b>{rsi_min}–{rsi_max}</b></span>",
+        unsafe_allow_html=True
+    )
+    st.dataframe(df_res, use_container_width=True)
 
-                st.success(f"Wyniki: {len(df_res)} spółek")
-                st.dataframe(df_res, use_container_width=True)
+    # Szybki wybór spółki → wykresy
+    st.markdown("### 💎 Wybierz spółkę do podglądu wykresów")
+    symbols = df_res["Ticker"].tolist()
+    if symbols:
+        # siatka przycisków
+        cols = st.columns(6)
+        selected_symbol = None
+        for i, sym in enumerate(symbols):
+            if cols[i % 6].button(sym):
+                selected_symbol = sym
 
-                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                csv_bytes = df_res.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "⬇️ Pobierz wyniki CSV",
-                    data=csv_bytes,
-                    file_name=f"rocketstock_scan_{ts}.csv",
-                    mime="text/csv"
-                )
+        # jeśli kliknięto, pokaż wykresy (Plotly)
+        if selected_symbol:
+            with st.spinner(f"Ładuję wykresy dla {selected_symbol}…"):
+                df_sel = get_stock_df(selected_symbol, period=period, vol_window=vol_window)
+            if df_sel is None or df_sel.empty:
+                st.error("Nie udało się pobrać danych wykresu.")
             else:
-                st.info("Brak spółek spełniających kryteria.")
+                last = df_sel.iloc[-1]
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
+                m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
+                dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
+                m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
+                # policz diamenty dla wybranej (ta sama logika)
+                macd_cross = macd_bullish_cross_recent(df_sel, macd_lookback)
+                vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
+                di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                                    macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
+                m4.metric("Sygnał", di)
+
+                st.plotly_chart(plot_candles_with_ema(df_sel, selected_symbol), use_container_width=True)
+                st.plotly_chart(plot_rsi(df_sel, selected_symbol), use_container_width=True)
+
+                # mała tabela pod wykresami
+                with st.expander("Pokaż tabelę wskaźników (ostatnie 15 d.):", expanded=False):
+                    st.dataframe(
+                        df_sel[["Close","RSI","EMA200","MACD","MACD_signal","Volume","AvgVolume"]].tail(15),
+                        use_container_width=True
+                    )
+    else:
+        st.info("Brak spółek do wyboru przy obecnych filtrach.")
+else:
+    st.info("Kliknij **🚀 Uruchom skaner** w panelu bocznym, aby rozpocząć.")
