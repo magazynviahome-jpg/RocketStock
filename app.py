@@ -12,11 +12,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 # =========================
 # USTAWIENIA I WYGLĄD
 # =========================
-st.set_page_config(
-    page_title="🚀 RocketStock – NASDAQ Scanner",
-    page_icon="🚀",
-    layout="wide"
-)
+
 
 st.markdown(
     """
@@ -304,9 +300,21 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         fit_columns_on_grid_load=True,
     )
 
+    # --- BEZPIECZNY ODBIÓR ZAZNACZENIA ---
     selected_row = None
-    if grid_response and grid_response.get("selected_rows"):
-        selected_row = grid_response["selected_rows"][0]  # dict z danymi wiersza
+    selected_rows = []
+
+    if isinstance(grid_response, dict):
+        selected_rows = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
+    elif hasattr(grid_response, "selected_rows"):
+        selected_rows = getattr(grid_response, "selected_rows", []) or []
+
+    if selected_rows:
+        selected_row = selected_rows[0]
+
+    # (opcjonalnie) automatycznie wybierz pierwszy wiersz, jeśli nic nie zaznaczono
+    # if not selected_row and not df_res.empty:
+    #     selected_row = df_res[view_cols].iloc[0].to_dict()
 
     # -------- Wykresy pod tabelą dla wybranej spółki --------
     if selected_row:
@@ -335,5 +343,6 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
 
             st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
             st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
+
 else:
     st.info("Kliknij **🚀 Uruchom skaner** w panelu bocznym, aby rozpocząć.")
