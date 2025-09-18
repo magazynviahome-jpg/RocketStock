@@ -1,5 +1,6 @@
 import io
 from datetime import datetime
+import math
 
 import pandas as pd
 import requests
@@ -21,26 +22,41 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* przyciski */
+    :root { --rocket-purple:#7c3aed; }
+    /* PRZYCISKI */
     .stButton>button, .stDownloadButton>button {
+      background: var(--rocket-purple) !important;
+      border-color: var(--rocket-purple) !important;
+      color: #fff !important;
       border-radius: 10px !important;
       font-weight: 600 !important;
     }
-    /* pigułki info */
-    .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
-    /* ag-grid wygładzony */
+    .stButton>button:hover, .stDownloadButton>button:hover { filter: brightness(0.92); }
+    /* SUWAKI */
+    div[data-baseweb="slider"] .rc-slider-track { background: var(--rocket-purple) !important; }
+    div[data-baseweb="slider"] .rc-slider-handle { border-color: var(--rocket-purple) !important; }
+    div[data-baseweb="slider"] .rc-slider-handle:active { box-shadow: 0 0 0 4px rgba(124,58,237,.2) !important; }
+    /* CHECKBOXY / RADIO */
+    input[type="checkbox"], input[type="radio"] { accent-color: var(--rocket-purple) !important; }
+    /* SELECTY (fallback) */
+    div[data-baseweb="select"] > div { border-color: var(--rocket-purple) !important; }
+    div[data-baseweb="select"] svg { color: var(--rocket-purple) !important; }
+    /* FOCUS */
+    input:focus, textarea:focus {
+      outline-color: var(--rocket-purple) !important;
+      box-shadow: 0 0 0 3px rgba(124,58,237,.2) !important;
+    }
+    /* AgGrid */
     .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper { border-radius: 8px; }
-    /* dopraw checkbox/radio, gdyby motyw nie zadziałał */
-    input[type="checkbox"], input[type="radio"] { accent-color: #7c3aed; }
-    /* slider (fallback) */
-    div[role="slider"] .rc-slider-track { background: #7c3aed !important; }
-    div[role="slider"] .rc-slider-handle { border-color: #7c3aed !important; }
+    .ag-theme-alpine .ag-row.ag-row-selected { background-color: rgba(124,58,237,.12) !important; }
+    .ag-theme-alpine .ag-row-hover { background-color: rgba(124,58,237,.08) !important; }
+    .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# (na Twoją prośbę – brak st.title/st.caption u góry)
+# (na Twoją prośbę – brak tytułu/tekstu u góry)
 
 # =========================
 # STAŁE / CACHE
@@ -49,7 +65,6 @@ NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt"
 
 @st.cache_data(show_spinner=False, ttl=60*30)
 def fetch_nasdaq_online() -> pd.DataFrame:
-    """Pobiera listę NASDAQ (txt z separatorami |) i zwraca DataFrame z kolumną 'Ticker'."""
     resp = requests.get(NASDAQ_URL, timeout=15)
     resp.raise_for_status()
     content = resp.content.decode("utf-8", errors="ignore")
@@ -66,7 +81,6 @@ def fetch_nasdaq_online() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_tickers_from_csv(path: str = "nasdaq_tickers_full.csv") -> pd.DataFrame:
-    """Wczytuje tickery z pliku CSV w repo (kolumna 'Ticker')."""
     df = pd.read_csv(path)
     if "Ticker" not in df.columns:
         raise ValueError("Plik CSV musi mieć kolumnę 'Ticker'.")
@@ -75,7 +89,6 @@ def load_tickers_from_csv(path: str = "nasdaq_tickers_full.csv") -> pd.DataFrame
     return df
 
 def get_tickers(source: str) -> pd.DataFrame:
-    """Źródło: Online (fallback do CSV) lub tylko CSV."""
     if source == "Auto (online, fallback do CSV)":
         try:
             t = fetch_nasdaq_online()
@@ -95,7 +108,6 @@ def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
-    """RSI, EMA200, MACD, średni wolumen (LOGIKA BEZ ZMIAN)."""
     if "Close" not in df.columns or "Volume" not in df.columns:
         raise ValueError("Dane muszą zawierać 'Close' i 'Volume'.")
     df["RSI"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
@@ -107,8 +119,7 @@ def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
     return df
 
 def macd_bullish_cross_recent(df: pd.DataFrame, lookback: int) -> bool:
-    macd = df["MACD"]
-    sig  = df["MACD_signal"]
+    macd = df["MACD"]; sig  = df["MACD_signal"]
     cross_up = (macd.shift(1) <= sig.shift(1)) & (macd > sig)
     return bool(cross_up.tail(lookback).any())
 
@@ -119,8 +130,7 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> pd.DataFrame | No
         return None
     df = flatten_columns(df)
     try:
-        df = compute_indicators(df, vol_window)
-        return df
+        return compute_indicators(df, vol_window)
     except Exception:
         return None
 
@@ -156,16 +166,13 @@ def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: i
         return "–"
 
 def vol_confirmation(volume, avg_volume, require: bool) -> bool:
-    if not require:
-        return True
-    if pd.isna(volume) or pd.isna(avg_volume):
-        return False
+    if not require: return True
+    if pd.isna(volume) or pd.isna(avg_volume): return False
     return volume > avg_volume
 
 def diamond_rank(di: str) -> int:
     return 0 if di == "–" else len(di)
 
-# Opis wolumenu (po przypisaniu kwantyli)
 def volume_label_from_ratio_qtile(q) -> str:
     if pd.isna(q): return "—"
     if q >= 0.80:  return "Bardzo wysoki"
@@ -180,27 +187,20 @@ def volume_label_from_ratio_qtile(q) -> str:
 def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"],
-        name=ticker, showlegend=False
-    ))
+    fig.add_trace(go.Candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"],
+                                 name=ticker, showlegend=False))
     fig.add_trace(go.Scatter(x=d.index, y=d["EMA200"], name="EMA200", mode="lines"))
-    fig.update_layout(
-        height=460, margin=dict(l=10, r=10, t=40, b=10),
-        title=f"{ticker} — Świece + EMA200", xaxis_rangeslider_visible=False
-    )
+    fig.update_layout(height=460, margin=dict(l=10, r=10, t=40, b=10),
+                      title=f"{ticker} — Świece + EMA200", xaxis_rangeslider_visible=False)
     return fig
 
 def plot_rsi(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=d.index, y=d["RSI"], name="RSI(14)", mode="lines"))
-    fig.add_hline(y=30, line_dash="dash")
-    fig.add_hline(y=70, line_dash="dash")
-    fig.update_layout(
-        height=240, margin=dict(l=10, r=10, t=40, b=10),
-        title=f"{ticker} — RSI(14)", yaxis=dict(range=[0, 100])
-    )
+    fig.add_hline(y=30, line_dash="dash"); fig.add_hline(y=70, line_dash="dash")
+    fig.update_layout(height=240, margin=dict(l=10, r=10, t=40, b=10),
+                      title=f"{ticker} — RSI(14)", yaxis=dict(range=[0, 100]))
     return fig
 
 def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
@@ -209,10 +209,8 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD"], name="MACD", mode="lines"))
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD_signal"], name="Signal", mode="lines"))
     fig.add_hline(y=0, line_dash="dash")
-    fig.update_layout(
-        height=240, margin=dict(l=10, r=10, t=40, b=10),
-        title=f"{ticker} — MACD", showlegend=True
-    )
+    fig.update_layout(height=240, margin=dict(l=10, r=10, t=40, b=10),
+                      title=f"{ticker} — MACD", showlegend=True)
     return fig
 
 # =========================
@@ -220,7 +218,6 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
 # =========================
 with st.sidebar:
     with st.expander("Skaner", expanded=True):
-        # parametry sygnału (bez zmian w logice)
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
@@ -228,26 +225,20 @@ with st.sidebar:
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
 
-        # Nowy filtr sygnałów
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
-
-        # Filtr wolumenu (po kategoriach relatywnych)
-        vol_filter = st.selectbox(
-            "Filtr wolumenu",
-            ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"],
-            index=0
-        )
+        vol_filter = st.selectbox("Filtr wolumenu",
+                                  ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"], index=0)
 
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 3500, 300, step=50)
 
         st.markdown("---")
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
-        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)  # domyślnie 1y
+        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
         run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
 # =========================
-# URUCHOMIENIE SKANU → TABELA (klik) → WYKRESY POD TABELĄ
+# URUCHOMIENIE SKANU → WYNIKI
 # =========================
 if run_scan:
     tickers_df = get_tickers(source)
@@ -255,10 +246,7 @@ if run_scan:
         st.error("Brak tickerów do skanowania.")
     else:
         tickers_list = tickers_df["Ticker"].tolist()[:scan_limit]
-        progress = st.progress(0)
-        status = st.empty()
-        results = []
-
+        progress = st.progress(0); status = st.empty(); results = []
         for i, t in enumerate(tickers_list, start=1):
             status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
             df = get_stock_df(t, period=period, vol_window=vol_window)
@@ -266,16 +254,11 @@ if run_scan:
                 last = df.iloc[-1]
                 vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
                 macd_cross = macd_bullish_cross_recent(df, macd_lookback)
-                di = score_diamonds(
-                    last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                    macd_cross, vol_ok, signal_mode, rsi_min, rsi_max
-                )
-
-                # ratio do klasyfikacji wolumenu
+                di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                                    macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
                 vol_ratio = None
                 if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and last.get("AvgVolume") > 0:
                     vol_ratio = float(last.get("Volume")) / float(last.get("AvgVolume"))
-
                 results.append({
                     "Ticker": t,
                     "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
@@ -289,22 +272,23 @@ if run_scan:
                     "Sygnał": di
                 })
             progress.progress(i/len(tickers_list))
-
         status.write("✅ Zakończono skan.")
         st.session_state.scan_results = pd.DataFrame(results)
 
-# Sekcja wyników
+# =========================
+# TABELA + RĘCZNE STRONY + WYKRESY
+# =========================
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # 1) usuń 1-diamentowe z widoku (zostaw 💎💎, 💎💎💎 i „–”)
+    # usuń 1-diamentowe z widoku, zostaw 💎💎, 💎💎💎 i „–”
     df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])]
 
-    # 2) „tylko 💎💎💎”, jeśli zaznaczono
+    # „tylko 💎💎💎”
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
-    # 3) klasy wolumenu wg kwantyli aktualnych wyników
+    # klasy wolumenu wg kwantyli
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -313,8 +297,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     else:
         def _label_fallback(row):
             v, a = row.get("Volume"), row.get("AvgVolume")
-            if pd.isna(v) or pd.isna(a) or a <= 0:
-                return "—"
+            if pd.isna(v) or pd.isna(a) or a <= 0: return "—"
             r = float(v) / float(a)
             if r > 2.0: return "Bardzo wysoki"
             if r > 1.5: return "Wysoki"
@@ -323,34 +306,46 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_label_fallback, axis=1)
 
-    # 4) filtr wolumenu (jeśli wybrano)
+    # filtr wolumenu
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
-    # 5) kolumny do widoku
+    # kolumny widoku + sort
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen"]
-
-    # 6) sort wg siły sygnału (💎💎💎 > 💎💎 > –) i alfabet
-    def _rank(di: str) -> int:
-        return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
+    def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
     df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"])
 
-    # ======= TABELA Z PAGINACJĄ (widoczne strony) =======
+    # ======= własna paginacja =======
     st.subheader("📋 Wyniki skanera")
+    total_rows = len(df_res)
+    left, mid, right = st.columns([1,1,6])
 
-    # wybór rozmiaru strony (UX – nie zmienia logiki)
-    page_size = st.selectbox("Wierszy na stronę", [10, 25, 50, 100], index=1, key="pagesize")
+    with left:
+        page_size = st.selectbox("Wierszy/stronę", [10, 25, 50, 100], index=1, key="pagesize")
+    total_pages = max(1, math.ceil(total_rows / page_size))
+    with mid:
+        page_num = st.number_input("Strona", min_value=1, max_value=total_pages, value=1, step=1, key="pagenum")
 
-    gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
+    start = (page_num - 1) * page_size
+    end = start + page_size
+    df_page = df_res.iloc[start:end].copy()
+
+    st.write(
+        f"<span class='pill'>Wyników: <b>{total_rows}</b></span>"
+        f"<span class='pill'>Strona: <b>{page_num}/{total_pages}</b></span>"
+        f"<span class='pill'>RSI: <b>{rsi_min}–{rsi_max}</b></span>",
+        unsafe_allow_html=True
+    )
+
+    # AgGrid BEZ własnej paginacji (renderujemy tylko bieżącą stronę)
+    gb = GridOptionsBuilder.from_dataframe(df_page[view_cols])
     gb.configure_selection('single', use_checkbox=False)
-    # WAŻNE: pokaż panel paginacji; ustaw rozmiar strony
-    gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size)
     gb.configure_grid_options(rowHeight=36)
     grid_options = gb.build()
 
     grid_response = AgGrid(
-        df_res[view_cols],
+        df_page[view_cols],
         gridOptions=grid_options,
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         theme='alpine',
@@ -358,7 +353,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         fit_columns_on_grid_load=True,
     )
 
-    # bezpieczny odbiór zaznaczenia
+    # wybór wiersza
     selected_row = None
     selected_rows = []
     if isinstance(grid_response, dict):
@@ -368,7 +363,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     if selected_rows:
         selected_row = selected_rows[0]
 
-    # -------- Wykresy pod tabelą dla wybranej spółki --------
+    # WYKRESY POD TABELĄ
     if selected_row:
         sym = selected_row["Ticker"]
         st.markdown("---")
