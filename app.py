@@ -1,13 +1,13 @@
 import io
-from datetime import datetime
 import math
+from datetime import datetime
 
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
-import yfinance as yf
 import ta
-import plotly.graph_objects as go
+import yfinance as yf
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 # =========================
@@ -38,10 +38,15 @@ st.markdown(
     div[data-baseweb="slider"] .rc-slider-handle { border-color: var(--rocket-purple) !important; }
     div[data-baseweb="slider"] .rc-slider-handle:active { box-shadow: 0 0 0 4px rgba(124,58,237,.2) !important; }
 
-    /* AgGrid – wygląd i przewijanie */
+    /* AgGrid – kompakt + przewijanie */
+    .ag-theme-alpine { font-size: 12px; }
     .ag-theme-alpine .ag-header, .ag-theme-alpine .ag-root-wrapper { border-radius: 8px; }
+    .ag-theme-alpine .ag-cell, .ag-theme-alpine .ag-header-cell {
+      padding-left: 6px !important; padding-right: 6px !important;
+    }
     .ag-theme-alpine .ag-row.ag-row-selected { background-color: rgba(124,58,237,.12) !important; }
     .ag-theme-alpine .ag-row-hover { background-color: rgba(124,58,237,.08) !important; }
+    .ag-theme-alpine .ag-center-cols-viewport { overflow-x: auto !important; } /* poziomy scroll gdy potrzeba */
 
     .pill {padding:2px 8px;border-radius:999px;background:#f5f3ff;color:#4c1d95;margin-right:6px;}
     .small {font-size:12px;color:#6b7280;}
@@ -310,7 +315,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
     if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
 
-    # widok + sort
+    # WIDOK + SORT
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen"]
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     df_res["Rank"] = df_res["Sygnał"].apply(_rank)
@@ -326,13 +331,22 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         unsafe_allow_html=True
     )
 
-    # TABELA – STAŁA WYSOKOŚĆ, PRZEWIJANA W ŚRODKU
+    # TABELA – STAŁA WYSOKOŚĆ, PRZEWIJANA (flex kolumny + poziomy scroll gdy trzeba)
     gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
-    gb.configure_selection('single', use_checkbox=False)
+    gb.configure_default_column(resizable=True)
+
+    # elastyczne szerokości i minimalne szerokości
+    for col in view_cols:
+        gb.configure_column(col, flex=1, minWidth=90)
+    gb.configure_column("Ticker", minWidth=100, maxWidth=140)
+    gb.configure_column("Sygnał", minWidth=90, maxWidth=110)
+    gb.configure_column("Wolumen", minWidth=120)
+
     gb.configure_grid_options(
-        rowHeight=36,
-        suppressPaginationPanel=True,  # brak paginacji
-        domLayout='normal'             # normal = stała wysokość + scroll
+        rowHeight=34,
+        suppressPaginationPanel=True,   # brak paginacji
+        domLayout='normal',             # stała wysokość kontenera + scroll wewnątrz
+        ensureDomOrder=True,
     )
     grid_options = gb.build()
 
@@ -341,8 +355,8 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         gridOptions=grid_options,
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         theme='alpine',
-        height=520,                # <<< stała wysokość → przewijanie w tabeli
-        fit_columns_on_grid_load=True,
+        height=560,                       # stała wysokość – tabela przewijana
+        fit_columns_on_grid_load=False,   # flex zarządza szerokościami
     )
 
     # wybór wiersza (klik)
