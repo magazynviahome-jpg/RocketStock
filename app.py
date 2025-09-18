@@ -239,7 +239,6 @@ with st.sidebar:
         f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
         f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
         f_align_on = st.checkbox("Zgranie średnich: Close > EMA50 > EMA200", value=False)
-        # tylko checkbox (bez pól liczbowych)
         f_macd_fresh_on = st.checkbox("MACD świeży: cross w N dniach + histogram rośnie", value=False)
         f_macd_fresh_look = 3
         f_macd_hist_up_days = 1
@@ -256,7 +255,6 @@ with st.sidebar:
             f_vr_max = st.number_input("— VR max (cap)", 0.5, 10.0, 3.0, step=0.1, format="%.1f")
 
         st.markdown("---")
-        # Kapitalizacja (USD)
         f_mcap_on = st.checkbox("Filtr kapitalizacji (USD)", value=False)
         colM1, colM2 = st.columns(2)
         with colM1:
@@ -284,12 +282,13 @@ with st.sidebar:
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
-# Zapamiętaj parametry (dla wejść)
+# zapamiętaj podstawowe parametry do wyliczeń wejść
 st.session_state["period"] = period
 st.session_state["vol_window"] = vol_window
+st.session_state.setdefault("selected_symbol", None)
 
 # =========================
-# FUNDAMENTY — cache MC i PRO
+# FUNDAMENTY — cache
 # =========================
 @st.cache_data(show_spinner=False, ttl=60*30)
 def get_market_cap_fast(ticker: str) -> Optional[float]:
@@ -307,11 +306,8 @@ def nz(x, default=None):
 def fetch_fundamentals(ticker: str) -> dict:
     tk = yf.Ticker(ticker)
     data = {"ticker": ticker}
-    # fast_info
-    try:
-        fi = tk.fast_info
-    except Exception:
-        fi = {}
+    try: fi = tk.fast_info
+    except Exception: fi = {}
     data["currency"] = fi.get("currency")
     data["last_price"] = fi.get("last_price") or fi.get("lastPrice")
     data["market_cap"] = fi.get("market_cap")
@@ -319,15 +315,11 @@ def fetch_fundamentals(ticker: str) -> dict:
     data["year_low"]  = fi.get("year_low")
     data["shares"] = fi.get("shares")
 
-    # info (defensywnie)
     info = {}
-    try:
-        info = tk.get_info()
+    try: info = tk.get_info()
     except Exception:
-        try:
-            info = tk.info
-        except Exception:
-            info = {}
+        try: info = tk.info
+        except Exception: info = {}
     def g(k): return info.get(k)
 
     data.update({
@@ -351,16 +343,11 @@ def fetch_fundamentals(ticker: str) -> dict:
         "current_ratio": g("currentRatio"),
         "quick_ratio": g("quickRatio"),
     })
-
-    # trends / ratings / targets
     try:
         et = tk.earnings_trend
-        if isinstance(et, pd.DataFrame) and not et.empty:
-            col = "growth" if "growth" in et else None
-            if col:
-                data["forward_eps_growth"] = et[col].astype(float).dropna().iloc[-1]
-    except Exception:
-        pass
+        if isinstance(et, pd.DataFrame) and not et.empty and "growth" in et:
+            data["forward_eps_growth"] = et["growth"].astype(float).dropna().iloc[-1]
+    except Exception: pass
     try:
         rs = tk.recommendations_summary
         if isinstance(rs, pd.DataFrame) and not rs.empty:
@@ -368,17 +355,14 @@ def fetch_fundamentals(ticker: str) -> dict:
             data["rec_buy"] = int(rs.get("buy", pd.Series()).fillna(0).astype(int).sum())
             data["rec_hold"] = int(rs.get("hold", pd.Series()).fillna(0).astype(int).sum())
             data["rec_sell"] = int(rs.get("sell", pd.Series()).fillna(0).astype(int).sum())
-    except Exception:
-        pass
+    except Exception: pass
     try:
         pt = tk.analyst_price_target
         if isinstance(pt, pd.DataFrame) and not pt.empty:
             data["price_target_mean"] = float(pt["targetMean"].dropna().iloc[-1])
             data["price_target_high"] = float(pt["targetHigh"].dropna().iloc[-1])
             data["price_target_low"]  = float(pt["targetLow"].dropna().iloc[-1])
-    except Exception:
-        pass
-    # dywidendy
+    except Exception: pass
     try:
         divs = tk.dividends
         if isinstance(divs, pd.Series) and not divs.empty:
@@ -386,18 +370,13 @@ def fetch_fundamentals(ticker: str) -> dict:
             lp = data.get("last_price")
             data["div_ttm"] = ttm
             data["div_yield"] = (ttm/lp) if (lp and lp>0) else None
-    except Exception:
-        pass
-    # earnings date
+    except Exception: pass
     try:
         cal = tk.calendar
-        if isinstance(cal, pd.DataFrame) and not cal.empty:
-            if "Earnings Date" in cal.index:
-                ed = cal.loc["Earnings Date"].iloc[0]
-                data["earnings_date"] = pd.to_datetime(ed) if pd.notna(ed) else None
-    except Exception:
-        pass
-    # zwroty / drawdown
+        if isinstance(cal, pd.DataFrame) and not cal.empty and "Earnings Date" in cal.index:
+            ed = cal.loc["Earnings Date"].iloc[0]
+            data["earnings_date"] = pd.to_datetime(ed) if pd.notna(ed) else None
+    except Exception: pass
     try:
         hist = tk.history(period="1y", interval="1d", auto_adjust=False)
         if isinstance(hist, pd.DataFrame) and not hist.empty:
@@ -409,8 +388,7 @@ def fetch_fundamentals(ticker: str) -> dict:
             data["ret_6m"] = ret(126); data["ret_1y"] = ret(252 if len(ser)>252 else len(ser)-1)
             roll_max = ser.cummax(); drawdown = ser/roll_max - 1.0
             data["max_dd_1y"] = float(drawdown.min()*100.0)
-    except Exception:
-        pass
+    except Exception: pass
     return data
 
 def _fmt_money(x, cur="USD"):
@@ -444,8 +422,7 @@ def _pct_from(a, b) -> Optional[float]:
 # =========================
 if run_scan:
     # zachowaj poprzedni wybór, by spróbować go przywrócić
-    prev_rank = st.session_state.get("selected_from_rank")
-    prev_table = st.session_state.get("selected_from_table")
+    prev_sym = st.session_state.get("selected_symbol")
 
     tickers_df = get_tickers(source)
     if tickers_df is None or tickers_df.empty:
@@ -457,9 +434,7 @@ if run_scan:
             status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
 
             # Filtr MC przed pobraniem świec (opcjonalnie)
-            if st.session_state.get("f_mcap_on_cache") is None:
-                st.session_state["f_mcap_on_cache"] = False
-            if 'f_mcap_on' in locals() and f_mcap_on:
+            if f_mcap_on:
                 mc = get_market_cap_fast(t)
                 if mc is None or not (f_mcap_min <= mc <= f_mcap_max):
                     progress.progress(i/len(tickers_list)); continue
@@ -571,16 +546,12 @@ if run_scan:
         status.write("✅ Zakończono skan.")
         st.session_state.scan_results = pd.DataFrame(results)
 
-        # PRÓBA PRZYWRÓCENIA WYBORU po skanie (jeśli ticker nadal istnieje)
-        df_tmp = st.session_state.scan_results
-        if prev_rank in set(df_tmp["Ticker"]):
-            st.session_state["selected_from_rank"] = prev_rank
-        elif prev_table in set(df_tmp["Ticker"]):
-            st.session_state["selected_from_table"] = prev_table
-        else:
-            # jeśli nic nie ma, wyzeruj
-            st.session_state.pop("selected_from_rank", None)
-            st.session_state.pop("selected_from_table", None)
+        # Przywróć poprzedni wybór, jeśli nadal istnieje
+        if prev_sym and not st.session_state.scan_results.empty:
+            if prev_sym in set(st.session_state.scan_results["Ticker"]):
+                st.session_state["selected_symbol"] = prev_sym
+            else:
+                st.session_state["selected_symbol"] = None
 
 # =========================
 # RANKING (bez AI)
@@ -592,27 +563,22 @@ def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
     close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
     rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
     volr = _safe(row.get("VolRatio")); avgv = _safe(row.get("AvgVolume"))
-    # 1) dystans do EMA200 (cap 10%) – im bliżej, tym lepiej (mniejszy pościg)
     dist_score = 0.0
     if close and ema200 and ema200>0:
         dist = close/ema200 - 1.0
         dist_score = max(0.0, min(dist, 0.10)) / 0.10
-    # 2) RSI blisko środka zakresu
     rsi_score = 0.0
     if rsi is not None:
         mid = (rsi_min + rsi_max)/2.0
         half_range = max(1.0, (rsi_max - rsi_min)/2.0)
         rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
-    # 3) MACD siła
     macd_score = 0.0
     if macd is not None and macd_sig is not None:
         diff = macd - macd_sig
         macd_score = max(0.0, min(diff, 0.50))/0.50
-    # 4) VolRatio (cap 2.0)
     volr_score = 0.0
     if volr is not None:
         volr_score = max(0.0, min(volr, 2.0))/2.0
-    # 5) Płynność
     liq_score = 0.0
     if isinstance(avgv,(int,float)) and avgv:
         if avgv >= 5_000_000: liq_score = 1.0
@@ -769,7 +735,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # Klasy wolumenu (etykiety)
+    # Etykiety wolumenu (dla widoku)
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -807,16 +773,16 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
                     with col:
                         label = f"{start + rr.name + 1}. {rr['Ticker']} · {rr['Score']:.1f}"
                         if st.button(label, key=f"chip_{rr['Ticker']}", use_container_width=True):
-                            st.session_state["selected_from_rank"] = rr["Ticker"]
+                            st.session_state["selected_symbol"] = rr["Ticker"]
 
     # ===== TABELA =====
     view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
 
-    # Wymuś „tylko 💎💎💎” tuż przed tabelą
+    # Wymuś „tylko 💎💎💎” dokładnie tuż przed tabelą
     if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
 
-    # opcjonalne zawężenie do 3 stanów (utrzymanie ładu w tabeli)
+    # zawężenie do znanych stanów (nie przywraca 💎💎!)
     df_res = df_res[df_res["Sygnał"].isin(["💎💎", "💎💎💎", "–"])].reset_index(drop=True)
 
     # sort
@@ -834,6 +800,9 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         unsafe_allow_html=True
     )
 
+    # Stabilny key, nie resetujemy komponentu między rerunami
+    grid_key = "scan_table_aggrid"
+
     gb = GridOptionsBuilder.from_dataframe(df_res[view_cols])
     gb.configure_selection('single', use_checkbox=False)
     gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')
@@ -846,10 +815,10 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         theme='alpine',
         height=table_height,
         fit_columns_on_grid_load=bool(fit_cols),
-        key="scan_table",
+        key=grid_key,
     )
 
-    # wybór z tabeli — zapisz
+    # Odczytaj wybór z tabeli — jeśli jest, nadpisz selected_symbol
     selected_row = None
     if isinstance(grid_response, dict):
         sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
@@ -859,13 +828,16 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         sel = getattr(grid_response, "selected_rows", []) or []
         if sel:
             selected_row = sel[0]
-    if selected_row:
-        st.session_state["selected_from_table"] = selected_row["Ticker"]
 
-    # Priorytet wyboru: ranking > tabela
-    sym = st.session_state.get("selected_from_rank") or st.session_state.get("selected_from_table")
+    if selected_row:
+        st.session_state["selected_symbol"] = selected_row["Ticker"]
+    else:
+        # brak nowej selekcji – zachowaj poprzednią, jeśli nadal istnieje w df_res
+        if st.session_state["selected_symbol"] not in set(df_res["Ticker"]):
+            st.session_state["selected_symbol"] = None
 
     # -------- WYKRESY + PODSUMOWANIE PRO --------
+    sym = st.session_state.get("selected_symbol")
     if sym:
         st.markdown("---")
         st.subheader(f"📈 {sym} — podgląd wykresów")
@@ -897,5 +869,6 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
                 render_summary_pro(sym, st.session_state.scan_results, rsi_min, rsi_max)
             except Exception as e:
                 st.warning(f"Nie udało się zbudować Podsumowania PRO: {e}")
+
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
