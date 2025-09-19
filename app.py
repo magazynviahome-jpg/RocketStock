@@ -29,11 +29,6 @@ st.markdown(
 
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
-
-    /* powiększ hitbox checkboxa – łatwiej klikać */
-    div[data-testid="stDataEditor"] input[type="checkbox"]{
-      width:18px;height:18px; transform: translateY(2px);
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -301,11 +296,10 @@ with st.sidebar:
         f_resist_on = st.checkbox("Bliskość oporu: min 3% do 3-mies. high", value=False)
         f_resist_min = st.number_input("— Min odległość do 3m high (%)", 0.0, 20.0, 3.0, step=0.5, format="%.1f")
 
-    with st.expander("Ranking, Tabela i Mobil", expanded=True):
+    with st.expander("Ranking i Mobil", expanded=True):
         enable_rank = st.checkbox("Ranking (bez AI)", value=True)
         top_n = st.selectbox("Ile pozycji w TOP", [5, 10], index=1)
         rank_layout = st.selectbox("Układ rankingu", ["Kompakt (6/wiersz)", "Średni (4/wiersz)", "Wąski (3/wiersz)"], index=0)
-        table_height_manual = st.slider("Maks. wysokość tabeli (px) — desktop", 420, 900, 560, step=20)
         mobile_mode = st.checkbox("✅ Tryb mobilny (lista + selectbox)", value=False)
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
@@ -314,13 +308,11 @@ with st.sidebar:
 st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
 st.session_state.setdefault("selection_source", None)
-st.session_state.setdefault("last_click_token", 0)
-
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
 
 # =========================
-# PRO podsumowanie (jak poprzednio)
+# PRO podsumowanie
 # =========================
 def _fmt_money(x, cur="USD"):
     try:
@@ -554,14 +546,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
             except Exception:
                 st.write("Float shares: **N/A**")
 
-    reasons = []
-    if pd.notna(close) and pd.notna(ema) and close>ema: reasons.append("✅ **Trend D1:** cena > EMA200.")
-    if macd_delta is not None and macd_delta>=0: reasons.append("✅ **Momentum:** MACD > signal.")
-    if pd.notna(rsi) and rsi_min <= rsi <= rsi_max: reasons.append(f"✅ **RSI** w zakresie ({rsi_min}–{rsi_max}).")
-    if reasons:
-        st.markdown("**Dlaczego na liście:**")
-        for r in reasons: st.write("- " + r)
-
 # =========================
 # SKAN (PRESCAN + zapisy)
 # =========================
@@ -580,8 +564,9 @@ if run_scan:
                 progress.progress(i/len(tickers_list)); continue
 
             last = df.iloc[-1]
+            # RSI twardo
             rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
-
+            # Close > EMA200 + cap
             price_ok = True
             if require_price_above_ema200:
                 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200"))>0:
@@ -590,6 +575,7 @@ if run_scan:
                 else:
                     price_ok = False
 
+            # Dodatkowe (opcjonalne)
             extra_ok = True
             if extra_ok and f_minavg_on:
                 extra_ok = pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume")) >= float(f_minavg_val)
@@ -644,7 +630,7 @@ if run_scan:
         st.session_state.scan_results_raw = pd.DataFrame(raw_results)
 
 # =========================
-# RANKING (bez AI) — (jak poprzednio)
+# RANKING (bez AI)
 # =========================
 def _safe(val, default=None):
     return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
@@ -690,13 +676,13 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# WIDOK: filtry → view_df + TABELA/ MOBIL + RANKING
+# WIDOK: RANKING → SELECTBOX → PODSUMOWANIE → TABELA NA KOŃCU
 # =========================
 raw = st.session_state.get("scan_results_raw", pd.DataFrame())
 if not raw.empty:
     df_view = raw.copy()
 
-    # opcjonalna etykieta wolumenu (nie wpływa na tabelę)
+    # etykieta wolumenu (opcjonalna)
     ratio_series = pd.to_numeric(df_view["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -705,7 +691,7 @@ if not raw.empty:
     if only_three:
         df_view = df_view[df_view["Sygnał"] == "💎💎💎"]
 
-    # ===== RANKING =====
+    # ===== RANKING (góra) =====
     if enable_rank:
         rank_df = build_ranking(raw, rsi_min, rsi_max, top_n)
         st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
@@ -723,82 +709,15 @@ if not raw.empty:
                             st.session_state["selected_symbol"] = rr["Ticker"]
                             st.session_state["selection_source"] = "rank"
 
-    # ===== TABELA / MOBIL =====
-    st.subheader("📋 Wyniki skanera")
-    st.write(
-        f"<span class='pill'>Wyników: <b>{len(df_view)}</b></span>"
-        f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
-        f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
-        f"<span class='pill'>Okres: <b>{period}</b></span>"
-        f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>",
-        unsafe_allow_html=True
-    )
+    # ===== SELECTBOX z wyszukiwaniem (środek) =====
+    st.subheader("🔎 Wybierz spółkę do podsumowania")
+    tickers_list = df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist()
+    sel = st.selectbox("Wpisz lub wybierz ticker", ["—"] + tickers_list, index=0, key="selectbox_symbol")
+    if sel != "—":
+        st.session_state["selected_symbol"] = sel
+        st.session_state["selection_source"] = "selectbox"
 
-    # przygotuj kolumny i formaty (2 miejsca)
-    df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","MarketCap","ShortPctFloat"]].copy()
-    df_show.rename(columns={
-        "ShortPctFloat": "Short%",
-        "MarketCap": "MC (B USD)"
-    }, inplace=True)
-    # MC w miliardach — brak -> "—"
-    df_show["MC (B USD)"] = df_show["MC (B USD)"].apply(lambda x: round(x/1e9, 2) if pd.notna(x) else None)
-    for c in ["Close","RSI","EMA200","VolRatio","Short%"]:
-        if c in df_show.columns:
-            df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
-
-    # kolumna „🔎 Podgląd” — impuls (zachowuje się jak przycisk)
-    df_show.insert(0, "🔎 Podgląd", False)
-
-    # wysokość tabeli zależna od liczby wierszy, ale przewijana
-    rows = len(df_show)
-    row_h = 38
-    header_h = 46
-    target_h = min(table_height_manual, max(220, header_h + rows*row_h))
-
-    if mobile_mode:
-        # mobil – prostszy widok tabeli
-        st.dataframe(
-            df_show[["Ticker","Sygnał","Close","RSI","Short%","MC (B USD)"]],
-            use_container_width=True, hide_index=True, height=target_h
-        )
-        # wybór spółki z selectboxa (wygodne na dotyk)
-        tickers_list = df_show["Ticker"].tolist()
-        sel = st.selectbox("Wybierz spółkę", ["—"] + tickers_list, index=0, key=f"mobile_select")
-        if sel != "—":
-            st.session_state["selected_symbol"] = sel
-            st.session_state["selection_source"] = "mobile"
-    else:
-        edited = st.data_editor(
-            df_show,
-            hide_index=True,
-            use_container_width=True,
-            height=target_h,
-            column_config={
-                "🔎 Podgląd": st.column_config.CheckboxColumn("🔎 Podgląd", help="Kliknij, aby wyświetlić Podsumowanie PRO"),
-                "Close": st.column_config.NumberColumn("Close", format="%.2f"),
-                "RSI": st.column_config.NumberColumn("RSI", format="%.2f"),
-                "EMA200": st.column_config.NumberColumn("EMA200", format="%.2f"),
-                "VolRatio": st.column_config.NumberColumn("VR", format="%.2f"),
-                "Short%": st.column_config.NumberColumn("Short%", format="%.2f"),
-                "MC (B USD)": st.column_config.NumberColumn("MC (B USD)", format="%.2f"),
-            },
-            disabled=["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","Short%","MC (B USD)"],
-            key="editor_table",
-        )
-
-        # zachowanie „jak przycisk”: wykryj True, ustaw symbol i natychmiast wyczyść
-        if "🔎 Podgląd" in edited.columns:
-            clicked_rows = edited.index[edited["🔎 Podgląd"] == True].tolist()
-            if clicked_rows:
-                idx = clicked_rows[-1]
-                sym = edited.loc[idx, "Ticker"]
-                st.session_state["selected_symbol"] = sym
-                st.session_state["selection_source"] = "table"
-                # impuls — czyść zaznaczenie i odśwież UI
-                st.session_state["last_click_token"] += 1
-                st.experimental_rerun()
-
-    # -------- WYKRESY + PODSUMOWANIE PRO --------
+    # ===== PODSUMOWANIE + WYKRESY =====
     sym = st.session_state.get("selected_symbol")
     if sym:
         st.markdown("---")
@@ -831,6 +750,45 @@ if not raw.empty:
                 render_summary_pro(sym, raw, rsi_min, rsi_max)
             except Exception as e:
                 st.warning(f"Nie udało się zbudować Podsumowania PRO: {e}")
+
+    # ===== TABELA — NA KOŃCU WIDOKU =====
+    st.markdown("---")
+    st.subheader("📋 Wyniki skanera (lista)")
+    st.write(
+        f"<span class='pill'>Wyników: <b>{len(df_view)}</b></span>"
+        f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
+        f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
+        f"<span class='pill'>Okres: <b>{period}</b></span>"
+        f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>",
+        unsafe_allow_html=True
+    )
+
+    # przygotuj kolumny i formaty (2 miejsca)
+    df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","MarketCap","ShortPctFloat"]].copy()
+    df_show.rename(columns={
+        "ShortPctFloat": "Short%",
+        "MarketCap": "MC (B USD)"
+    }, inplace=True)
+    df_show["MC (B USD)"] = df_show["MC (B USD)"].apply(lambda x: round(x/1e9, 2) if pd.notna(x) else None)
+    for c in ["Close","RSI","EMA200","VolRatio","Short%"]:
+        if c in df_show.columns:
+            df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
+
+    # dodaj nieklikalną kolumnę opisową „Podgląd 🔎”
+    df_show.insert(1, "Podgląd", "🔎 Podgląd")
+
+    # wysokość z przewijaniem (dyn. ale rozsądne limity)
+    rows = len(df_show)
+    row_h = 35
+    header_h = 46
+    target_h = min(700, max(240, header_h + rows*row_h))
+
+    st.dataframe(
+        df_show[["Ticker","Podgląd","Sygnał","Close","RSI","EMA200","VolRatio","Short%","MC (B USD)"]],
+        use_container_width=True,
+        hide_index=True,
+        height=target_h
+    )
 
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
