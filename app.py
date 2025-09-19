@@ -347,6 +347,10 @@ with st.sidebar:
         with colM2:
             f_mcap_max = st.number_input("— MC max (USD)", 0.0, 5_000_000_000_000.0, 2_000_000_000_000.0, step=50_000_000.0, format="%.0f")
 
+        # ---- Short float % ----
+        f_short_on = st.checkbox("Short float % (min)", value=False)
+        f_short_min = st.slider("— Short float ≥ %", 0, 100, 30, step=1)
+
         st.markdown("---")
         f_gap_on = st.checkbox("Max GAP UP %", value=False)
         f_gap_max = st.number_input("— GAP UP ≤ %", 0.0, 30.0, 8.0, step=0.5, format="%.1f")
@@ -656,6 +660,12 @@ if run_scan:
                 mc_tmp = get_market_cap_fast(t)
                 extra_ok = extra_ok and (mc_tmp is not None) and (float(f_mcap_min) <= mc_tmp <= float(f_mcap_max))
 
+            # Short float % (0–1 z Yahoo) — filtr minimalny
+            spf_tmp = None
+            if f_short_on:
+                spf_tmp = get_short_percent_float(t)
+                extra_ok = extra_ok and (spf_tmp is not None) and (spf_tmp * 100.0 >= float(f_short_min))
+
             if extra_ok and f_gap_on and pd.notna(last.get("GapUpPct")):
                 extra_ok = float(last.get("GapUpPct")) <= float(f_gap_max)
             if extra_ok and f_minprice_on and pd.notna(last.get("Close")):
@@ -677,7 +687,7 @@ if run_scan:
                                     macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
             mc = mc_tmp if mc_tmp is not None else get_market_cap_fast(t)
-            spf = get_short_percent_float(t)  # 0–1
+            spf = spf_tmp if spf_tmp is not None else get_short_percent_float(t)  # 0–1
 
             raw_results.append({
                 "Ticker": t,
@@ -864,7 +874,8 @@ with tab_scan:
             f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
             f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
             f"<span class='pill'>Okres: <b>{period}</b></span>"
-            f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>",
+            f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>"
+            + (f"<span class='pill'>Short float ≥ <b>{f_short_min}%</b></span>" if f_short_on else ""),
             unsafe_allow_html=True
         )
 
