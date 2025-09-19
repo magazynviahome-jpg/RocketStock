@@ -30,7 +30,7 @@ st.markdown(
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
 
-    /* ===== Auto-mobile: układ jednokolumnowy i pełna szerokość przycisków na wąskich ekranach ===== */
+    /* ===== Auto-mobile ===== */
     @media (max-width: 820px){
       .block-container{ padding-left:0.6rem; padding-right:0.6rem; }
       [data-testid="column"]{ width:100% !important; flex: 1 0 100% !important; display:block !important; }
@@ -38,16 +38,35 @@ st.markdown(
       .stButton>button{ width:100%; }
     }
 
-    /* ===== Wyrównanie zawartości st.dataframe do LEWEJ ===== */
+    /* ===== Wyrównanie st.dataframe do LEWEJ (nagłówki + WSZYSTKIE komórki) ===== */
+    /* nagłówki */
     [data-testid="stDataFrame"] thead th div{
       justify-content:flex-start !important;
       text-align:left !important;
     }
-    [data-testid="stDataFrame"] td div[data-testid="stMarkdownContainer"]{
+    [data-testid="stDataFrame"] [role="columnheader"]{
       text-align:left !important;
     }
+    [data-testid="stDataFrame"] [role="columnheader"] *{
+      text-align:left !important;
+    }
+
+    /* komórki */
     [data-testid="stDataFrame"] div[role="gridcell"]{
+      display:flex !important;
       justify-content:flex-start !important;
+      align-items:center !important;
+      text-align:left !important;
+    }
+
+    /* upewnij się, że ZAWARTOŚĆ w środku też jest lewa */
+    [data-testid="stDataFrame"] div[role="gridcell"] *{
+      text-align:left !important;
+    }
+
+    /* markdown w komórkach */
+    [data-testid="stDataFrame"] td div[data-testid="stMarkdownContainer"]{
+      text-align:left !important;
     }
     </style>
     """,
@@ -285,7 +304,6 @@ with st.sidebar:
 
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
 
-        # Filtr wolumenu z „Wszystkie”
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Wysoki", "Średni", "Niski"], index=0)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
@@ -319,7 +337,7 @@ with st.sidebar:
         f_resist_min = st.number_input("— Min odległość do 3m high (%)", 0.0, 20.0, 3.0, step=0.5, format="%.1f")
 
         st.markdown("---")
-        # Przeniesione tutaj:
+        # przeniesione tu:
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
