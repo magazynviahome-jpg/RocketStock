@@ -264,10 +264,8 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
 # =========================
 # SIDEBAR — USTAWIENIA + WYGLĄD
 # =========================
-st.session_state.setdefault("scanner_expanded", True)  # kontrola zwijania skanera
-
 with st.sidebar:
-    with st.expander("Skaner", expanded=st.session_state["scanner_expanded"]):
+    with st.expander("Skaner", expanded=True):
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI (twardy)", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
@@ -284,11 +282,7 @@ with st.sidebar:
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Wysoki", "Średni", "Niski"], index=0)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
-        st.markdown("---")
-        source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
-        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
-
-    with st.expander("Dodatkowe filtry (opcjonalne)", expanded=False):
+    with st.expander("Dodatkowe Filtry", expanded=False):
         f_minavg_on = st.checkbox("Min. średni wolumen (AvgVolume)", value=False)
         f_minavg_val = st.number_input("— Min AvgVolume", 0, 50_000_000, 1_000_000, step=100_000)
 
@@ -317,18 +311,17 @@ with st.sidebar:
         f_resist_on = st.checkbox("Bliskość oporu: min 3% do 3-mies. high", value=False)
         f_resist_min = st.number_input("— Min odległość do 3m high (%)", 0.0, 20.0, 3.0, step=0.5, format="%.1f")
 
-    with st.expander("Ranking i Mobil (auto)", expanded=True):
+        st.markdown("---")
+        # Przeniesione tutaj:
+        source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
+        period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
+
+    with st.expander("Ranking", expanded=True):
         enable_rank = st.checkbox("Ranking (bez AI)", value=True)
         top_n = st.selectbox("Ile pozycji w TOP", [5, 10], index=1)
         rank_layout = st.selectbox("Układ rankingu", ["Kompakt (6/wiersz)", "Średni (4/wiersz)", "Wąski (3/wiersz)"], index=0)
-        # Tryb mobilny działa automatycznie przez CSS – bez przełączników.
 
-    # Przycisk u góry sidebara do ręcznego zwinięcia/rozwinięcia skanera
-    if st.button("↕️ Zwiń/Rozwiń skaner (sidebar)", use_container_width=True):
-        st.session_state["scanner_expanded"] = not st.session_state["scanner_expanded"]
-        st.rerun()
-
-run_scan = st.sidebar.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
+    run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
 # ===== STAN
 st.session_state.setdefault("scan_results_raw", pd.DataFrame())
@@ -767,13 +760,9 @@ if not raw.empty:
     header_h = 46
     target_h = min(700, max(240, header_h + rows*row_h))
 
-    # Użycie pandas Styler do centrowania treści (fallback zapewnia CSS powyżej)
-    styled = df_show.style.set_properties(**{"text-align": "center"}).set_table_styles(
-        [{"selector": "th", "props": [("text-align", "center")]}]
-    )
-
+    cols_tbl = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
     st.dataframe(
-        styled[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]],
+        df_show[cols_tbl],
         use_container_width=True,
         hide_index=True,
         height=target_h
@@ -815,9 +804,3 @@ if not raw.empty:
 
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
-
-# ===== PRZYCISK NA DOLE: ten sam toggle co u góry (zwija/rozwija ekspander „Skaner”) =====
-st.markdown("---")
-if st.button("↕️ Zwiń/Rozwiń skaner (filtry)", use_container_width=True):
-    st.session_state["scanner_expanded"] = not st.session_state["scanner_expanded"]
-    st.rerun()
