@@ -29,6 +29,11 @@ st.markdown(
 
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
+
+    /* powiększ hitbox checkboxa – łatwiej klikać */
+    div[data-testid="stDataEditor"] input[type="checkbox"]{
+      width:18px;height:18px; transform: translateY(2px);
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -131,9 +136,17 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataF
 # =========================
 @st.cache_data(show_spinner=False, ttl=60*30)
 def get_market_cap_fast(ticker: str) -> Optional[float]:
+    """Najpierw fast_info.market_cap, fallback do get_info()['marketCap']."""
     try:
-        fi = yf.Ticker(ticker).fast_info
+        tk = yf.Ticker(ticker)
+        fi = tk.fast_info or {}
         mc = fi.get("market_cap")
+        if mc is None:
+            try:
+                info = tk.get_info()
+            except Exception:
+                info = getattr(tk, "info", {}) or {}
+            mc = info.get("marketCap")
         return float(mc) if mc is not None else None
     except Exception:
         return None
@@ -142,11 +155,10 @@ def get_market_cap_fast(ticker: str) -> Optional[float]:
 def get_short_percent_float(ticker: str) -> Optional[float]:
     try:
         tk = yf.Ticker(ticker)
-        info = {}
         try:
             info = tk.get_info()
         except Exception:
-            info = tk.info if hasattr(tk, "info") else {}
+            info = getattr(tk, "info", {}) or {}
         v = info.get("shortPercentOfFloat")
         return float(v) if v is not None else None
     except Exception:
@@ -293,7 +305,7 @@ with st.sidebar:
         enable_rank = st.checkbox("Ranking (bez AI)", value=True)
         top_n = st.selectbox("Ile pozycji w TOP", [5, 10], index=1)
         rank_layout = st.selectbox("Układ rankingu", ["Kompakt (6/wiersz)", "Średni (4/wiersz)", "Wąski (3/wiersz)"], index=0)
-        table_height = st.slider("Wysokość tabeli (px) — desktop", 420, 900, 560, step=20)
+        table_height_manual = st.slider("Maks. wysokość tabeli (px) — desktop", 420, 900, 560, step=20)
         mobile_mode = st.checkbox("✅ Tryb mobilny (lista + selectbox)", value=False)
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
@@ -302,12 +314,13 @@ with st.sidebar:
 st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
 st.session_state.setdefault("selection_source", None)
+st.session_state.setdefault("last_click_token", 0)
 
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
 
 # =========================
-# PRO podsumowanie
+# PRO podsumowanie (jak poprzednio)
 # =========================
 def _fmt_money(x, cur="USD"):
     try:
@@ -518,14 +531,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
             st.write(f"Max DD (1Y): **{fn.get('max_dd_1y'):.1f}%**" if fn.get("max_dd_1y") is not None else "Max DD (1Y): **N/A**")
 
     with st.expander("🗓️ Wydarzenia i dywidendy", expanded=False):
-        earn = fn.get("earnings_date")
-        if earn is not None:
-            try:
-                st.write(f"Earnings: **{pd.to_datetime(earn).date()}**")
-            except Exception:
-                st.write("Earnings: **N/A**")
-        else:
-            st.write("Earnings: **N/A**")
+        st.write("Earnings: **N/A**")  # brak stabilnej daty w yf
         div_y = fn.get("div_yield")
         if div_y is not None:
             st.write(f"Dividend (TTM): **{_fmt_money(fn.get('div_ttm'), cur)}**  •  Yield: **{div_y*100:.2f}%**")
@@ -552,18 +558,12 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     if pd.notna(close) and pd.notna(ema) and close>ema: reasons.append("✅ **Trend D1:** cena > EMA200.")
     if macd_delta is not None and macd_delta>=0: reasons.append("✅ **Momentum:** MACD > signal.")
     if pd.notna(rsi) and rsi_min <= rsi <= rsi_max: reasons.append(f"✅ **RSI** w zakresie ({rsi_min}–{rsi_max}).")
-    risks = []
-    if dist_pct is not None and dist_pct>15: risks.append("⚠️ Spory dystans nad EMA200 (>15%).")
-
     if reasons:
         st.markdown("**Dlaczego na liście:**")
         for r in reasons: st.write("- " + r)
-    if risks:
-        st.markdown("**Ryzyka / na co uważać:**")
-        for r in risks: st.write("- " + r)
 
 # =========================
-# SKAN (PRESCAN z EMA cap i dodatkowymi filtrami)
+# SKAN (PRESCAN + zapisy)
 # =========================
 if run_scan:
     raw_results = []
@@ -580,9 +580,8 @@ if run_scan:
                 progress.progress(i/len(tickers_list)); continue
 
             last = df.iloc[-1]
-            # 1) RSI twardo
             rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
-            # 2) Close>EMA200 + cap %
+
             price_ok = True
             if require_price_above_ema200:
                 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200"))>0:
@@ -591,36 +590,30 @@ if run_scan:
                 else:
                     price_ok = False
 
-            # 3) Dodatkowe prescan (opcjonalne)
             extra_ok = True
-            # min avg vol
             if extra_ok and f_minavg_on:
                 extra_ok = pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume")) >= float(f_minavg_val)
-            # vol ratio
+
             vr_val = None
             if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume"))>0:
                 vr_val = float(last.get("Volume"))/float(last.get("AvgVolume"))
             if extra_ok and f_vr_on:
                 extra_ok = (vr_val is not None) and (vr_val >= float(f_vr_min)) and (vr_val <= float(f_vr_max))
-            # market cap
+
             mc_tmp = None
             if f_mcap_on:
                 mc_tmp = get_market_cap_fast(t)
                 extra_ok = extra_ok and (mc_tmp is not None) and (float(f_mcap_min) <= mc_tmp <= float(f_mcap_max))
-            # gap
+
             if extra_ok and f_gap_on and pd.notna(last.get("GapUpPct")):
                 extra_ok = float(last.get("GapUpPct")) <= float(f_gap_max)
-            # min price
             if extra_ok and f_minprice_on and pd.notna(last.get("Close")):
                 extra_ok = float(last.get("Close")) >= float(f_minprice_val)
-            # atr
             if extra_ok and f_atr_on and pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close"))>0:
                 atr_pct = float(last.get("ATR"))/float(last.get("Close"))*100.0
                 extra_ok = atr_pct <= float(f_atr_max)
-            # HH/HL
             if extra_ok and f_hhhl_on and len(df) >= 3 and pd.notna(df["HH3"].iloc[-1]) and pd.notna(df["HL3"].iloc[-1]):
                 extra_ok = bool(df["HH3"].iloc[-1] and df["HL3"].iloc[-1])
-            # resist
             if extra_ok and f_resist_on and pd.notna(last.get("RoomToHighPct")):
                 extra_ok = float(last.get("RoomToHighPct")) >= float(f_resist_min)
 
@@ -632,7 +625,6 @@ if run_scan:
                 di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                     macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
-            # Market cap & Short% (do tabeli)
             mc = mc_tmp if mc_tmp is not None else get_market_cap_fast(t)
             spf = get_short_percent_float(t)  # 0–1
 
@@ -652,7 +644,7 @@ if run_scan:
         st.session_state.scan_results_raw = pd.DataFrame(raw_results)
 
 # =========================
-# RANKING (bez AI)
+# RANKING (bez AI) — (jak poprzednio)
 # =========================
 def _safe(val, default=None):
     return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
@@ -703,21 +695,12 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
 raw = st.session_state.get("scan_results_raw", pd.DataFrame())
 if not raw.empty:
     df_view = raw.copy()
+
+    # opcjonalna etykieta wolumenu (nie wpływa na tabelę)
     ratio_series = pd.to_numeric(df_view["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
         df_view["Wolumen"] = qtiles.apply(volume_label_from_ratio_qtile)
-    else:
-        def _fallback(row):
-            v, a = row.get("AvgVolume"), row.get("AvgVolume")
-            if pd.isna(v) or pd.isna(a) or a <= 0: return "—"
-            r = float(v) / float(a)
-            if r > 2.0: return "Bardzo wysoki"
-            if r > 1.5: return "Wysoki"
-            if r > 1.0: return "Normalny"
-            if r > 0.5: return "Niski"
-            return "Bardzo niski"
-        df_view["Wolumen"] = df_view.apply(_fallback, axis=1)
 
     if only_three:
         df_view = df_view[df_view["Sygnał"] == "💎💎💎"]
@@ -751,58 +734,69 @@ if not raw.empty:
         unsafe_allow_html=True
     )
 
+    # przygotuj kolumny i formaty (2 miejsca)
     df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","MarketCap","ShortPctFloat"]].copy()
     df_show.rename(columns={
         "ShortPctFloat": "Short%",
         "MarketCap": "MC (B USD)"
     }, inplace=True)
+    # MC w miliardach — brak -> "—"
     df_show["MC (B USD)"] = df_show["MC (B USD)"].apply(lambda x: round(x/1e9, 2) if pd.notna(x) else None)
     for c in ["Close","RSI","EMA200","VolRatio","Short%"]:
         if c in df_show.columns:
             df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
 
+    # kolumna „🔎 Podgląd” — impuls (zachowuje się jak przycisk)
+    df_show.insert(0, "🔎 Podgląd", False)
+
+    # wysokość tabeli zależna od liczby wierszy, ale przewijana
+    rows = len(df_show)
+    row_h = 38
+    header_h = 46
+    target_h = min(table_height_manual, max(220, header_h + rows*row_h))
+
     if mobile_mode:
+        # mobil – prostszy widok tabeli
+        st.dataframe(
+            df_show[["Ticker","Sygnał","Close","RSI","Short%","MC (B USD)"]],
+            use_container_width=True, hide_index=True, height=target_h
+        )
+        # wybór spółki z selectboxa (wygodne na dotyk)
         tickers_list = df_show["Ticker"].tolist()
         sel = st.selectbox("Wybierz spółkę", ["—"] + tickers_list, index=0, key=f"mobile_select")
         if sel != "—":
             st.session_state["selected_symbol"] = sel
             st.session_state["selection_source"] = "mobile"
-
-        st.dataframe(
-            df_show[["Ticker","Sygnał","Close","RSI","Short%","MC (B USD)"]],
-            use_container_width=True, hide_index=True
-        )
     else:
-        # DESKTOP: natywna edytowalna tabela z kolumną „Wybierz” (checkbox)
-        df_show = df_show.reset_index(drop=True)
-        df_show["Wybierz"] = False  # edytowalna kolumna
-
         edited = st.data_editor(
             df_show,
             hide_index=True,
             use_container_width=True,
-            height=table_height,
+            height=target_h,
             column_config={
+                "🔎 Podgląd": st.column_config.CheckboxColumn("🔎 Podgląd", help="Kliknij, aby wyświetlić Podsumowanie PRO"),
                 "Close": st.column_config.NumberColumn("Close", format="%.2f"),
                 "RSI": st.column_config.NumberColumn("RSI", format="%.2f"),
                 "EMA200": st.column_config.NumberColumn("EMA200", format="%.2f"),
                 "VolRatio": st.column_config.NumberColumn("VR", format="%.2f"),
                 "Short%": st.column_config.NumberColumn("Short%", format="%.2f"),
                 "MC (B USD)": st.column_config.NumberColumn("MC (B USD)", format="%.2f"),
-                "Wybierz": st.column_config.CheckboxColumn("Szczegóły", help="Zaznacz, aby wyświetlić Podsumowanie PRO"),
             },
             disabled=["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","Short%","MC (B USD)"],
             key="editor_table",
         )
 
-        # sprawdź zaznaczony wiersz (CheckboxColumn)
-        if "Wybierz" in edited.columns:
-            chosen = edited.index[edited["Wybierz"] == True].tolist()
-            if chosen:
-                row_idx = chosen[-1]
-                sym = edited.loc[row_idx, "Ticker"]
+        # zachowanie „jak przycisk”: wykryj True, ustaw symbol i natychmiast wyczyść
+        if "🔎 Podgląd" in edited.columns:
+            clicked_rows = edited.index[edited["🔎 Podgląd"] == True].tolist()
+            if clicked_rows:
+                idx = clicked_rows[-1]
+                sym = edited.loc[idx, "Ticker"]
                 st.session_state["selected_symbol"] = sym
                 st.session_state["selection_source"] = "table"
+                # impuls — czyść zaznaczenie i odśwież UI
+                st.session_state["last_click_token"] += 1
+                st.experimental_rerun()
 
     # -------- WYKRESY + PODSUMOWANIE PRO --------
     sym = st.session_state.get("selected_symbol")
