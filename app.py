@@ -29,6 +29,17 @@ st.markdown(
 
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
+
+    /* ===== Auto-mobile: układ jednokolumnowy na wąskich ekranach ===== */
+    @media (max-width: 820px){
+      .block-container{ padding-left:0.6rem; padding-right:0.6rem; }
+      [data-testid="column"]{ width:100% !important; flex: 1 0 100% !important; display:block !important; }
+      .stPlotlyChart{ margin-left:auto; margin-right:auto; }
+    }
+
+    /* ===== Klasy do zwijania sidebara (sterowane flagą w session_state) ===== */
+    .hide-sidebar [data-testid="stSidebar"]{ display:none !important; }
+    .hide-sidebar .block-container{ max-width: 1200px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -131,7 +142,6 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataF
 # =========================
 @st.cache_data(show_spinner=False, ttl=60*30)
 def get_market_cap_fast(ticker: str) -> Optional[float]:
-    """Najpierw fast_info.market_cap, fallback do get_info()['marketCap']."""
     try:
         tk = yf.Ticker(ticker)
         fi = tk.fast_info or {}
@@ -202,13 +212,19 @@ def vol_confirmation(volume, avg_volume, require: bool) -> bool:
     if pd.isna(volume) or pd.isna(avg_volume): return False
     return volume > avg_volume
 
-def volume_label_from_ratio_qtile(q) -> str:
-    if pd.isna(q): return "—"
-    if q >= 0.80:  return "Bardzo wysoki"
-    if q >= 0.60:  return "Wysoki"
-    if q >= 0.40:  return "Normalny"
-    if q >= 0.20:  return "Niski"
-    return "Bardzo niski"
+# Prosta kategoryzacja: Wysoki / Średni / Niski (na bazie VolRatio=Volume/AvgVolume)
+def volume_label_from_ratio_simple(vr: Optional[float]) -> str:
+    if vr is None or pd.isna(vr):
+        return "Średni"
+    try:
+        vr = float(vr)
+    except Exception:
+        return "Średni"
+    if vr >= 1.2:
+        return "Wysoki"
+    if vr >= 0.8:
+        return "Średni"
+    return "Niski"
 
 # =========================
 # WYKRESY
@@ -260,7 +276,8 @@ with st.sidebar:
 
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
 
-        vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"], index=0)
+        # >>> Filtr wolumenu z „Wszystkie”
+        vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Wysoki", "Średni", "Niski"], index=0)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
         st.markdown("---")
@@ -300,7 +317,8 @@ with st.sidebar:
         enable_rank = st.checkbox("Ranking (bez AI)", value=True)
         top_n = st.selectbox("Ile pozycji w TOP", [5, 10], index=1)
         rank_layout = st.selectbox("Układ rankingu", ["Kompakt (6/wiersz)", "Średni (4/wiersz)", "Wąski (3/wiersz)"], index=0)
-        mobile_mode = st.checkbox("✅ Tryb mobilny (lista + selectbox)", value=False)
+        # Checkbox zostawiamy, ale układ i tak jest responsywny przez CSS @media:
+        mobile_mode = st.checkbox("✅ Tryb mobilny (lista + selectbox)", value=False, help="Widok automatycznie składa się na małych ekranach.")
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
@@ -308,8 +326,13 @@ with st.sidebar:
 st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
 st.session_state.setdefault("selection_source", None)
+st.session_state.setdefault("hide_sidebar", False)
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
+
+# Jeśli włączony zwijak, nałóż klasę na body
+container_cls = " hide-sidebar" if st.session_state.get("hide_sidebar") else ""
+st.markdown(f"<div class='{container_cls}'>", unsafe_allow_html=True)
 
 # =========================
 # PRO podsumowanie
@@ -523,7 +546,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
             st.write(f"Max DD (1Y): **{fn.get('max_dd_1y'):.1f}%**" if fn.get("max_dd_1y") is not None else "Max DD (1Y): **N/A**")
 
     with st.expander("🗓️ Wydarzenia i dywidendy", expanded=False):
-        st.write("Earnings: **N/A**")  # brak stabilnej daty w yf
+        st.write("Earnings: **N/A**")
         div_y = fn.get("div_yield")
         if div_y is not None:
             st.write(f"Dividend (TTM): **{_fmt_money(fn.get('div_ttm'), cur)}**  •  Yield: **{div_y*100:.2f}%**")
@@ -623,7 +646,7 @@ if run_scan:
                 "VolRatio": round(vr_val, 2) if vr_val is not None else None,
                 "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
                 "MarketCap": float(mc) if mc is not None else None,
-                "ShortPctFloat": (float(spf)*100.0 if spf is not None else None),  # w %
+                "ShortPctFloat": (float(spf)*100.0 if spf is not None else None),
             })
             progress.progress(i/len(tickers_list))
         status.write("✅ Zakończono skan.")
@@ -682,14 +705,13 @@ raw = st.session_state.get("scan_results_raw", pd.DataFrame())
 if not raw.empty:
     df_view = raw.copy()
 
-    # etykieta wolumenu (opcjonalna)
-    ratio_series = pd.to_numeric(df_view["VolRatio"], errors="coerce")
-    if ratio_series.notna().sum() >= 5:
-        qtiles = ratio_series.rank(pct=True)
-        df_view["Wolumen"] = qtiles.apply(volume_label_from_ratio_qtile)
-
+    # Kolumna "Wolumen" (z VolRatio)
+    df_view["Wolumen"] = df_view["VolRatio"].apply(volume_label_from_ratio_simple)
     if only_three:
         df_view = df_view[df_view["Sygnał"] == "💎💎💎"]
+    # Filtr: „Wszystkie” pomija filtrowanie
+    if vol_filter != "Wszystkie":
+        df_view = df_view[df_view["Wolumen"] == vol_filter]
 
     # ===== RANKING (góra) =====
     if enable_rank:
@@ -702,9 +724,10 @@ if not raw.empty:
             for start in range(0, len(rank_df), per_row):
                 row_slice = rank_df.iloc[start:start+per_row]
                 cols = st.columns(len(row_slice))
-                for col, (_, rr) in zip(cols, row_slice.iterrows()):
+                for pos, ((_, rr), col) in enumerate(zip(row_slice.iterrows(), cols)):
                     with col:
-                        label = f"{start + rr.name + 1}. {rr['Ticker']} · {rr['Score']:.1f}"
+                        rank_no = start + pos + 1
+                        label = f"{rank_no}. {rr['Ticker']} · {rr['Score']:.1f}"
                         if st.button(label, key=f"rank_{rr['Ticker']}", use_container_width=True):
                             st.session_state["selected_symbol"] = rr["Ticker"]
                             st.session_state["selection_source"] = "rank"
@@ -717,7 +740,7 @@ if not raw.empty:
         st.session_state["selected_symbol"] = sel
         st.session_state["selection_source"] = "selectbox"
 
-    # ===== TABELA — POD RANKINGIEM =====
+    # ===== TABELA — POD RANKINGIEM (wyśrodkowana) =====
     st.markdown("---")
     st.subheader("📋 Wyniki skanera (lista)")
     st.write(
@@ -729,13 +752,10 @@ if not raw.empty:
         unsafe_allow_html=True
     )
 
-    df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","MarketCap","ShortPctFloat"]].copy()
-    df_show.rename(columns={
-        "ShortPctFloat": "Short%",
-        "MarketCap": "MC (B USD)"
-    }, inplace=True)
+    df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","MarketCap","ShortPctFloat"]].copy()
+    df_show.rename(columns={"ShortPctFloat": "Short%", "MarketCap": "MC (B USD)"}, inplace=True)
     df_show["MC (B USD)"] = df_show["MC (B USD)"].apply(lambda x: round(x/1e9, 2) if pd.notna(x) else None)
-    for c in ["Close","RSI","EMA200","VolRatio","Short%"]:
+    for c in ["Close","RSI","EMA200","Short%"]:
         if c in df_show.columns:
             df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
 
@@ -744,12 +764,14 @@ if not raw.empty:
     header_h = 46
     target_h = min(700, max(240, header_h + rows*row_h))
 
-    st.dataframe(
-        df_show[["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","Short%","MC (B USD)"]],
-        use_container_width=True,
-        hide_index=True,
-        height=target_h
-    )
+    c_left, c_mid, c_right = st.columns([1, 6, 1])
+    with c_mid:
+        st.dataframe(
+            df_show[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]],
+            use_container_width=True,
+            hide_index=True,
+            height=target_h
+        )
 
     # ===== PODSUMOWANIE + WYKRESY (na końcu) =====
     sym = st.session_state.get("selected_symbol")
@@ -770,7 +792,6 @@ if not raw.empty:
             distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
             m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
             macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
-            # poprawne: używamy last.get("AvgVolume") zamiast last["AvgVolume"]
             vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), locals().get("use_volume",True))
             di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                      macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
@@ -788,3 +809,10 @@ if not raw.empty:
 
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
+
+# ===== Dół strony: zwijak sidebara =====
+with st.expander("🧰 Ustawienia widoku (dół strony)", expanded=False):
+    st.checkbox("Zwiń sidebar", key="hide_sidebar", help="Schowaj/lekkie powiększenie obszaru roboczego.")
+
+# Zamknięcie wrappera body-class
+st.markdown("</div>", unsafe_allow_html=True)
