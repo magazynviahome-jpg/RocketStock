@@ -182,7 +182,7 @@ def nz(x, default=None):
     return default if (x is None or (isinstance(x, float) and pd.isna(x))) else x
 
 # =========================
-# SCORING DIAMENTÓW
+# SCORING DIAMENTÓW (bez zmian)
 # =========================
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
     if pd.isna(rsi) or rsi < rsi_min or rsi > rsi_max:
@@ -269,7 +269,7 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     return fig
 
 # =========================
-# RENDER TABELI HTML
+# RENDER TABELI HTML (LEWE WYRÓWNANIE + SCROLL H NA MOBILE)
 # =========================
 def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
     df_tbl = df[cols].copy()
@@ -300,7 +300,7 @@ def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
     <style>
       .rs-table {{
         width:100%; border-collapse:collapse; table-layout:auto;
-        min-width: 920px;
+        min-width: 920px; /* na mobile pojawi się poziomy scroll zamiast ściskania */
       }}
       .rs-table th, .rs-table td {{
         text-align:left; padding:10px 12px; border-bottom:1px solid #f1f1f1;
@@ -550,7 +550,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     title_bits = [sym, fn.get("long_name") or "", f"• {fn.get('industry') or '—'}", f"• {fn.get('country') or '—'}", f"• MC: {cap_txt}"]
     st.markdown("**" + "  ".join([x for x in title_bits if x]) + f"  •  waluta: {cur}**")
 
-    # — Dane z listy (wszystkie kolumny tabeli)
     wolumen_cat = volume_label_from_ratio_simple(vr)
     mc_b = row.get("MarketCap")
     mc_b_disp = f"{round(mc_b/1e9, 2)}" if (mc_b is not None and not pd.isna(mc_b)) else "—"
@@ -570,7 +569,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         st.write(f"Short %: **{short_pct:.2f}%**" if short_pct is not None else "Short %: **—**")
         st.write(f"MC (B USD): **{mc_b_disp}**")
 
-    # — Proponowane wejścia
     reco = None
     if dist_pct is not None and pd.notna(rsi):
         if dist_pct > 8 or rsi >= (rsi_max - 1): reco = "Preferuj **pullback** (mniejszy pościg, lepszy RR)."
@@ -583,7 +581,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         for ln in entry_lines: st.write(ln)
         if reco: st.write(reco)
 
-    # — Fundamenty
     with st.expander("Wycena i jakość", expanded=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -641,7 +638,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
                 st.write("Float shares: **N/A**")
 
 # =========================
-# SKAN — TWARDY PRESCAN WSZYSTKICH WŁĄCZONYCH FILTRÓW
+# SKAN — TWARDY PRESCAN + ZAPIS DODATKOWYCH MIAR DLA RANKINGU V2
 # =========================
 if run_scan:
     raw_results = []
@@ -672,6 +669,9 @@ if run_scan:
                         progress.progress(i/len(tickers_list)); continue
                 else:
                     progress.progress(i/len(tickers_list)); continue
+            else:
+                if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200"))>0:
+                    dist_pct_now = (float(last.get("Close"))/float(last.get("EMA200")) - 1.0) * 100.0
 
             # 3) Min AvgVolume
             if f_minavg_on:
@@ -711,98 +711,208 @@ if run_scan:
                     progress.progress(i/len(tickers_list)); continue
 
             # 9) ATR%
+            atr_pct = None
             if f_atr_on:
                 if not (pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close")) > 0):
                     progress.progress(i/len(tickers_list)); continue
                 atr_pct = float(last.get("ATR"))/float(last.get("Close"))*100.0
                 if atr_pct > float(f_atr_max):
                     progress.progress(i/len(tickers_list)); continue
+            else:
+                if pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close"))>0:
+                    atr_pct = float(last.get("ATR"))/float(last.get("Close"))*100.0
 
             # 10) HH & HL
+            hh3_ok = bool(pd.notna(df["HH3"].iloc[-1]) and df["HH3"].iloc[-1]) if "HH3" in df.columns else False
+            hl3_ok = bool(pd.notna(df["HL3"].iloc[-1]) and df["HL3"].iloc[-1]) if "HL3" in df.columns else False
             if f_hhhl_on:
-                if not (len(df) >= 3 and bool(pd.notna(df["HH3"].iloc[-1]) and pd.notna(df["HL3"].iloc[-1]) and df["HH3"].iloc[-1] and df["HL3"].iloc[-1])):
+                if not (hh3_ok and hl3_ok):
                     progress.progress(i/len(tickers_list)); continue
 
             # 11) Min odległość do 3m high
+            room_to_high = last.get("RoomToHighPct") if pd.notna(last.get("RoomToHighPct")) else None
             if f_resist_on:
-                if not (pd.notna(last.get("RoomToHighPct")) and float(last.get("RoomToHighPct")) >= float(f_resist_min)):
+                if not (room_to_high is not None and float(room_to_high) >= float(f_resist_min)):
                     progress.progress(i/len(tickers_list)); continue
 
             # — Scoring (po wszystkich twardych filtrach)
             vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
             macd_cross = macd_bullish_cross_recent(df, macd_lookback)
+            # MACD histogram rising (ostatnie 3 wartości rosnące)
+            macd_hist_rising = False
+            try:
+                h = df["MACD_hist"].tail(3).values
+                macd_hist_rising = bool(h[0] <= h[1] <= h[2])
+            except Exception:
+                macd_hist_rising = False
+
             di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                 macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
             mc = mc_tmp if mc_tmp is not None else get_market_cap_fast(t)
             spf = spf_tmp if spf_tmp is not None else get_short_percent_float(t)  # 0–1
 
+            # Dodatkowe miary do rankingu V2
+            ema50 = last.get("EMA50"); ema200 = last.get("EMA200"); close = last.get("Close")
+            stack_ok = (pd.notna(close) and pd.notna(ema50) and pd.notna(ema200) and (close>ema50>ema200))
+            ema200_slope5 = last.get("EMA200_Slope5") if pd.notna(last.get("EMA200_Slope5")) else None
+            rsi_up = bool(last.get("RSI_Up")) if "RSI_Up" in last else False
+            atr_pct = atr_pct if atr_pct is not None else (float(last.get("ATR"))/float(close)*100.0 if pd.notna(last.get("ATR")) and pd.notna(close) and close>0 else None)
+            dist_ema200_pct = dist_pct_now if dist_pct_now is not None else (float(close)/float(ema200)-1.0)*100.0 if (pd.notna(close) and pd.notna(ema200) and ema200>0) else None
+            macd_hist_now = float(last.get("MACD_hist")) if pd.notna(last.get("MACD_hist")) else None
+
             raw_results.append({
                 "Ticker": t,
                 "Sygnał": di,
-                "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
+                "Close": round(float(close), 2) if pd.notna(close) else None,
                 "RSI": round(float(last.get("RSI")), 2) if pd.notna(last.get("RSI")) else None,
-                "EMA200": round(float(last.get("EMA200")), 2) if pd.notna(last.get("EMA200")) else None,
+                "EMA200": round(float(ema200), 2) if pd.notna(ema200) else None,
                 "VolRatio": round(vr_val, 2) if vr_val is not None else None,
                 "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
                 "MarketCap": float(mc) if mc is not None else None,
                 "ShortPctFloat": (float(spf)*100.0 if spf is not None else None),  # %
+                # Dla rankingu V2:
+                "DistEMA200Pct": dist_ema200_pct,
+                "ATRpct": atr_pct,
+                "StackOK": stack_ok,
+                "HH3": hh3_ok, "HL3": hl3_ok,
+                "RoomToHighPct": float(room_to_high) if room_to_high is not None else None,
+                "EMA200_Slope5": float(ema200_slope5) if ema200_slope5 is not None else None,
+                "RSI_Up": rsi_up,
+                "MACD_recent": macd_cross,
+                "MACD_hist": macd_hist_now,
+                "MACD_hist_rising": macd_hist_rising,
             })
             progress.progress(i/len(tickers_list))
         status.write("✅ Zakończono skan.")
         st.session_state.scan_results_raw = pd.DataFrame(raw_results)
 
 # =========================
-# RANKING (bez AI)
+# RANKING V2 (bez AI) – MIARODAJNY SKŁADANY SCORE 0–100
 # =========================
-def _safe(val, default=None):
-    return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
+def _clip01(x):
+    try:
+        return max(0.0, min(1.0, float(x)))
+    except Exception:
+        return 0.0
 
-def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
-    close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
-    rsi = _safe(row.get("RSI"))
-    dist_score = 0.0
-    if close and ema200 and ema200>0:
-        dist = close/ema200 - 1.0
-        dist_score = max(0.0, min(dist, 0.10)) / 0.10
+def _trapezoid(x, a, b, c, d):
+    """0 do a, rośnie do 1 w b, 1 do c, maleje do 0 w d."""
+    try:
+        x = float(x)
+    except Exception:
+        return 0.0
+    if x <= a or x >= d: return 0.0
+    if b <= x <= c: return 1.0
+    if a < x < b: return (x - a) / (b - a)
+    return (d - x) / (d - c)
+
+def _bell(x, a, b, c, d):
+    """'dzwon': 0 do a, 1 w [b,c], 0 po d (to samo co trapezoid)."""
+    return _trapezoid(x, a, b, c, d)
+
+def _liquidity_score(avgv):
+    try:
+        v = float(avgv or 0)
+    except Exception:
+        v = 0
+    # schodkowa/logarytmiczna aproksymacja
+    if v >= 5_000_000: return 1.0
+    if v >= 2_000_000: return 0.7
+    if v >= 1_000_000: return 0.5
+    if v >=   500_000: return 0.2
+    return 0.0
+
+def rank_score_row_v2(row, rsi_min: int, rsi_max: int) -> float:
+    # 1) Pozycja vs EMA200 — sweet spot 2–6% (0–100 skali procentowej)
+    e200pos = _bell(row.get("DistEMA200Pct"), 0.0, 2.0, 6.0, 12.0)
+
+    # 2) Nachylenie EMA200 (znormalizowane do ATR) – im wyższe tym lepiej
+    slope = row.get("EMA200_Slope5"); atrpct = row.get("ATRpct")
+    slope_score = 0.0
+    try:
+        if slope is not None and atrpct and atrpct > 0:
+            # przybliżenie: slope (USD/dzień) vs ATR% → urealniamy progi
+            # najpierw slope w % ceny ~ slope / Close * 100 -> ale nie mamy Close tu; użyjemy ATR% jako normalizatora proxy:
+            rel = float(slope) / (float(atrpct)/100.0) if float(atrpct)>0 else 0.0
+            # Progi empiryczne
+            slope_score = _trapezoid(rel, 0.00, 0.02, 0.08, 0.20)
+    except Exception:
+        slope_score = 0.0
+
+    # 3) Stacking EMA: Close > EMA50 > EMA200
+    stack_score = 1.0 if bool(row.get("StackOK")) else 0.0
+
+    # 4) Struktura HH/HL
+    hh = bool(row.get("HH3")); hl = bool(row.get("HL3"))
+    hhhl_score = 1.0 if (hh and hl) else (0.5 if (hh or hl) else 0.0)
+
+    # 5) RSI kontekstowy + bonus za wzrost
+    rsi = row.get("RSI")
     rsi_score = 0.0
     if rsi is not None:
-        mid = (rsi_min + rsi_max)/2.0
-        half_range = max(1.0, (rsi_max - rsi_min)/2.0)
-        rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
-    volr = _safe(row.get("VolRatio"))
-    volr_score = 0.0
-    if volr is not None:
-        volr_score = max(0.0, min(volr, 2.0))/2.0
-    avgv = _safe(row.get("AvgVolume"))
-    liq_score = 0.0
-    if isinstance(avgv,(int,float)) and avgv:
-        if avgv >= 5_000_000: liq_score = 1.0
-        elif avgv >= 2_000_000: liq_score = 0.7
-        elif avgv >= 1_000_000: liq_score = 0.5
-        elif avgv > 0: liq_score = 0.2
-    return round((0.35*dist_score + 0.35*rsi_score + 0.20*volr_score + 0.10*liq_score)*100.0, 1)
+        if 45 <= rsi <= 55: rsi_score = 1.0
+        elif (40 <= rsi < 45) or (55 < rsi <= 60): rsi_score = 0.5
+        else: rsi_score = 0.0
+        if bool(row.get("RSI_Up")):
+            rsi_score = min(1.0, rsi_score + 0.2)
+
+    # 6) MACD momentum: cross + histogram >0 i rosnący
+    macd_base = 0.7 if bool(row.get("MACD_recent")) else 0.2
+    hist = row.get("MACD_hist"); hist_rising = bool(row.get("MACD_hist_rising"))
+    macd_bonus = 0.3 if (hist is not None and hist > 0 and hist_rising) else (0.1 if (hist is not None and hist > 0) else 0.0)
+    macd_score = _clip01(macd_base + macd_bonus)
+
+    # 7) Wolumen jakościowy – VR sweet spot 1.1–1.8 (0.9–3.0 obcinasz)
+    vr = row.get("VolRatio")
+    volq = _bell(vr, 0.9, 1.1, 1.8, 3.0)
+
+    # 8) ATR window (3–8% najlepiej, 2–12% użyteczne)
+    atr_score = _trapezoid(atrpct, 2.0, 3.0, 8.0, 12.0)
+
+    # 9) Miejsce vs 3m high – 3–10% miejsca najlepiej
+    room = row.get("RoomToHighPct")
+    room_score = _bell(room, 0.5, 3.0, 10.0, 20.0)
+
+    # 10) Płynność
+    liq = _liquidity_score(row.get("AvgVolume"))
+
+    # Wagi (suma 100)
+    score = (
+        15*e200pos + 10*slope_score + 10*stack_score + 10*hhhl_score +
+        15*rsi_score + 15*macd_score + 10*volq + 10*atr_score + 5*room_score + 10*liq
+    )
+    return round(score, 1)
 
 def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> pd.DataFrame:
     if df is None or df.empty: return pd.DataFrame(columns=["Ticker","Score"])
     base = df.copy()
     base = base[base["Sygnał"]=="💎💎💎"]
     if base.empty: return pd.DataFrame(columns=["Ticker","Score"])
-    base["Score"] = base.apply(lambda r: rank_score_row(r, rsi_min, rsi_max), axis=1)
-    def rsi_dev(r):
-        rv = _safe(r.get("RSI"))
-        if rv is None: return 999.0
+
+    base["Score"] = base.apply(lambda r: rank_score_row_v2(r, rsi_min, rsi_max), axis=1)
+
+    # Tie-breaki deterministyczne
+    def _dev_mid_rsi(r):
+        rv = r.get("RSI")
+        if rv is None or pd.isna(rv): return 999.0
         mid = (rsi_min+rsi_max)/2.0
         return abs(rv-mid)
-    base["_dev"] = base.apply(rsi_dev, axis=1)
-    base = base.sort_values(["Score","AvgVolume","_dev","Ticker"], ascending=[False, False, True, True]).drop(columns=["_dev"])
+
+    base["_dev_rsi"] = base.apply(_dev_mid_rsi, axis=1)
+    base = base.sort_values(
+        ["Score","AvgVolume","RoomToHighPct","_dev_rsi","Ticker"],
+        ascending=[False, False, True, True, True]
+    ).drop(columns=["_dev_rsi"])
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# ZAKŁADKI
+# ZAKŁADKI: SKANER / PRZEWODNIK
 # =========================
 PRZEWODNIK_MD = r"""
 # Przewodnik użytkownika – RocketStock
+
+## RSI (Relative Strength Index)
 (...)
 """
 
@@ -820,7 +930,7 @@ with tab_scan:
         if 'vol_filter' in locals() and vol_filter != "Wszystkie":
             df_view = df_view[df_view["Wolumen"] == vol_filter]
 
-        # ===== RANKING =====
+        # ===== RANKING (V2) =====
         if enable_rank:
             rank_df = build_ranking(raw, rsi_min, rsi_max, top_n)
             st.markdown(f"### Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
@@ -838,9 +948,9 @@ with tab_scan:
                             if st.button(label, key=f"rank_{rr['Ticker']}", use_container_width=True):
                                 st.session_state["selected_symbol"] = rr["Ticker"]
                                 st.session_state["selection_source"] = "rank"
-                                st.session_state["selectbox_symbol"] = "—"
+                                st.session_state["selectbox_symbol"] = "—"   # reset selectboxa
 
-        # ===== Wybór spółki + sortowanie (obok siebie) =====
+        # ===== Wybór + sortowanie OBOK SIEBIE =====
         st.subheader("Wybierz spółkę i sortowanie")
         sort_cols = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
         col_left, col_right = st.columns([2, 1])
@@ -854,7 +964,7 @@ with tab_scan:
             sort_by = st.selectbox("Sortowanie", sort_cols, index=0, key="sort_by")
             sort_dir = st.radio("Kierunek", ["Rosnąco","Malejąco"], index=0, horizontal=True, key="sort_dir")
 
-        # ===== TABELA =====
+        # ===== TABELA (lewy align + scroll h) =====
         st.markdown("---")
         st.subheader("Wyniki skanera (lista)")
         pills = (
@@ -874,12 +984,16 @@ with tab_scan:
             if c in df_show.columns:
                 df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
 
+        # sort
         ascending = (sort_dir == "Rosnąco")
         if sort_by in df_show.columns:
             df_show = df_show.sort_values(by=sort_by, ascending=ascending, na_position="last", kind="mergesort")
 
         rows = len(df_show)
-        target_h = min(700, max(240, 46 + rows*35))
+        row_h = 35
+        header_h = 46
+        target_h = min(700, max(240, header_h + rows*row_h))
+
         cols_tbl = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
         render_table_left(df_show, cols_tbl, max_h=target_h)
 
@@ -913,7 +1027,6 @@ with tab_scan:
 
                 st.markdown("### Podsumowanie")
                 try:
-                    # przekazuję df_view (już po filtrach), by dane z listy były spójne
                     render_summary_pro(sym, df_view, rsi_min, rsi_max)
                 except Exception as e:
                     st.warning(f"Nie udało się zbudować Podsumowania: {e}")
