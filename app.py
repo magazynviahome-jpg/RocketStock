@@ -30,43 +30,12 @@ st.markdown(
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
 
-    /* ===== Auto-mobile ===== */
+    /* ===== Auto-mobile (telefon) ===== */
     @media (max-width: 820px){
       .block-container{ padding-left:0.6rem; padding-right:0.6rem; }
       [data-testid="column"]{ width:100% !important; flex: 1 0 100% !important; display:block !important; }
       .stPlotlyChart, .stMetric, .stButton{ margin-left:auto; margin-right:auto; width:100%; }
       .stButton>button{ width:100%; }
-    }
-
-    /* ===== Wyrównanie st.dataframe do LEWEJ (nagłówki + WSZYSTKIE komórki) ===== */
-    /* nagłówki */
-    [data-testid="stDataFrame"] thead th div{
-      justify-content:flex-start !important;
-      text-align:left !important;
-    }
-    [data-testid="stDataFrame"] [role="columnheader"]{
-      text-align:left !important;
-    }
-    [data-testid="stDataFrame"] [role="columnheader"] *{
-      text-align:left !important;
-    }
-
-    /* komórki */
-    [data-testid="stDataFrame"] div[role="gridcell"]{
-      display:flex !important;
-      justify-content:flex-start !important;
-      align-items:center !important;
-      text-align:left !important;
-    }
-
-    /* upewnij się, że ZAWARTOŚĆ w środku też jest lewa */
-    [data-testid="stDataFrame"] div[role="gridcell"] *{
-      text-align:left !important;
-    }
-
-    /* markdown w komórkach */
-    [data-testid="stDataFrame"] td div[data-testid="stMarkdownContainer"]{
-      text-align:left !important;
     }
     </style>
     """,
@@ -286,6 +255,47 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     fig.update_layout(height=240, margin=dict(l=10, r=10, t=40, b=10),
                       title=f"{ticker} — MACD", showlegend=True)
     return fig
+
+# =========================
+# RENDER TABELI HTML (lewe wyrównanie, sticky header)
+# =========================
+def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
+    df_tbl = df[cols].copy()
+
+    # budujemy prostą tabelę HTML z lewym wyrównaniem
+    thead = "<tr>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>"
+    rows_html = []
+    for _, r in df_tbl.iterrows():
+        tds = []
+        for c in cols:
+            v = r[c]
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                v = ""
+            tds.append(f"<td>{v}</td>")
+        rows_html.append("<tr>" + "".join(tds) + "</tr>")
+    tbody = "\n".join(rows_html)
+
+    html = f"""
+    <div style="max-height:{max_h}px; overflow:auto; border:1px solid #eee; border-radius:8px;">
+      <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
+        <thead style="position:sticky; top:0; background:#fafafa; z-index:1;">
+          {thead}
+        </thead>
+        <tbody>
+          {tbody}
+        </tbody>
+      </table>
+    </div>
+    <style>
+      table td, table th {{
+        text-align:left; padding:8px 10px; border-bottom:1px solid #f1f1f1;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      }}
+      table th {{ font-weight:600; color:#374151; }}
+      table tr:hover td {{ background:#fcfcff; }}
+    </style>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 # =========================
 # SIDEBAR — USTAWIENIA + WYGLĄD
@@ -761,7 +771,7 @@ if not raw.empty:
         st.session_state["selected_symbol"] = sel
         st.session_state["selection_source"] = "selectbox"
 
-    # ===== TABELA — POD RANKINGIEM (wyrównanie do LEWEJ via CSS) =====
+    # ===== TABELA — POD RANKINGIEM (HTML: lewy align) =====
     st.markdown("---")
     st.subheader("📋 Wyniki skanera (lista)")
     st.write(
@@ -786,12 +796,7 @@ if not raw.empty:
     target_h = min(700, max(240, header_h + rows*row_h))
 
     cols_tbl = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
-    st.dataframe(
-        df_show[cols_tbl],
-        use_container_width=True,
-        hide_index=True,
-        height=target_h
-    )
+    render_table_left(df_show, cols_tbl, max_h=target_h)
 
     # ===== PODSUMOWANIE + WYKRESY (na końcu) =====
     sym = st.session_state.get("selected_symbol")
