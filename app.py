@@ -922,5 +922,4 @@ with tab_scan:
 
 with tab_guide:
     st.markdown(PRZEWODNIK_MD, unsafe_allow_html=True)
-    st.download_button("Pobierz przewodnik (README.md)", PRZEWODNIK_MD, file_name="README.md")
     st.caption("© RocketStock — materiały edukacyjne. Brak rekomendacji inwestycyjnych.")
