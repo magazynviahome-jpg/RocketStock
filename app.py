@@ -248,7 +248,6 @@ with st.sidebar:
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
 
-        # Twardy prescan: Close > EMA200 oraz limit dystansu
         require_price_above_ema200 = st.checkbox("Wymagaj Close > EMA200 (prescan)", value=True)
         ema_dist_cap = st.slider("Max % nad EMA200 (prescan)", 0, 15, 15)
 
@@ -299,10 +298,10 @@ with st.sidebar:
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
-# ===== STAN: raw vs view =====
-st.session_state.setdefault("scan_results_raw", pd.DataFrame())   # nie zmieniamy bez kliknięcia skanera
+# ===== STAN
+st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
-st.session_state.setdefault("selection_source", None)  # "rank" | "table" | "mobile"
+st.session_state.setdefault("selection_source", None)
 
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
@@ -660,9 +659,7 @@ def _safe(val, default=None):
 
 def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
     close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
-    rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
-    # macd/ macd_sig mogą nie być w raw (tu ranking uproszczony bez nich)
-    macd_score = 0.0
+    rsi = _safe(row.get("RSI"))
     dist_score = 0.0
     if close and ema200 and ema200>0:
         dist = close/ema200 - 1.0
@@ -701,11 +698,10 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# WIDOK: filtry → view_df (zawsze 2 miejsca) + TABELA/ MOBIL + RANKING
+# WIDOK: filtry → view_df + TABELA/ MOBIL + RANKING
 # =========================
 raw = st.session_state.get("scan_results_raw", pd.DataFrame())
 if not raw.empty:
-    # wzbogacenie widoku: etykiety wolumenu
     df_view = raw.copy()
     ratio_series = pd.to_numeric(df_view["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
@@ -723,7 +719,6 @@ if not raw.empty:
             return "Bardzo niski"
         df_view["Wolumen"] = df_view.apply(_fallback, axis=1)
 
-    # filtr widoku „tylko 💎💎💎”
     if only_three:
         df_view = df_view[df_view["Sygnał"] == "💎💎💎"]
 
@@ -756,20 +751,17 @@ if not raw.empty:
         unsafe_allow_html=True
     )
 
-    # przygotuj kolumny i formaty (2 miejsca)
     df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","MarketCap","ShortPctFloat"]].copy()
     df_show.rename(columns={
         "ShortPctFloat": "Short%",
         "MarketCap": "MC (B USD)"
     }, inplace=True)
-    # MC w miliardach – czytelnie; liczby do 2 miejsc
     df_show["MC (B USD)"] = df_show["MC (B USD)"].apply(lambda x: round(x/1e9, 2) if pd.notna(x) else None)
     for c in ["Close","RSI","EMA200","VolRatio","Short%"]:
         if c in df_show.columns:
             df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
 
     if mobile_mode:
-        # ——— TRYB MOBILNY: selectbox + mini lista
         tickers_list = df_show["Ticker"].tolist()
         sel = st.selectbox("Wybierz spółkę", ["—"] + tickers_list, index=0, key=f"mobile_select")
         if sel != "—":
@@ -781,9 +773,9 @@ if not raw.empty:
             use_container_width=True, hide_index=True
         )
     else:
-        # ——— DESKTOP: natywna edytowalna tabela z przyciskiem „Szczegóły”
+        # DESKTOP: natywna edytowalna tabela z kolumną „Wybierz” (checkbox)
         df_show = df_show.reset_index(drop=True)
-        df_show["Szczegóły"] = False  # przycisk kolumny
+        df_show["Wybierz"] = False  # edytowalna kolumna
 
         edited = st.data_editor(
             df_show,
@@ -797,17 +789,17 @@ if not raw.empty:
                 "VolRatio": st.column_config.NumberColumn("VR", format="%.2f"),
                 "Short%": st.column_config.NumberColumn("Short%", format="%.2f"),
                 "MC (B USD)": st.column_config.NumberColumn("MC (B USD)", format="%.2f"),
-                "Szczegóły": st.column_config.ButtonColumn("Szczegóły", help="Pokaż Podsumowanie PRO", width="small"),
+                "Wybierz": st.column_config.CheckboxColumn("Szczegóły", help="Zaznacz, aby wyświetlić Podsumowanie PRO"),
             },
             disabled=["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","Short%","MC (B USD)"],
             key="editor_table",
         )
 
-        # sprawdź kliknięty wiersz (ButtonColumn ustawia True)
-        if "Szczegóły" in edited.columns:
-            clicked = edited.index[edited["Szczegóły"] == True].tolist()
-            if clicked:
-                row_idx = clicked[-1]
+        # sprawdź zaznaczony wiersz (CheckboxColumn)
+        if "Wybierz" in edited.columns:
+            chosen = edited.index[edited["Wybierz"] == True].tolist()
+            if chosen:
+                row_idx = chosen[-1]
                 sym = edited.loc[row_idx, "Ticker"]
                 st.session_state["selected_symbol"] = sym
                 st.session_state["selection_source"] = "table"
