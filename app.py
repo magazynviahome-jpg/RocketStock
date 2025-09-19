@@ -202,8 +202,6 @@ def plot_rsi(df: pd.DataFrame, ticker: str, bars: int = 180):
 def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
     fig = go.Figure()
-    fig.add_trace(go.Candlestick())  # placeholder to keep consistent theme (optional)
-    fig.data = []  # clear
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD"], name="MACD", mode="lines"))
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD_signal"], name="Signal", mode="lines"))
     fig.add_trace(go.Bar(x=d.index, y=df.tail(bars)["MACD_hist"], name="Histogram", opacity=0.3))
@@ -227,6 +225,10 @@ with st.sidebar:
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
         require_price_above_ema200 = st.checkbox("Wymagaj Close > EMA200", value=True)
 
+        # NOWE: filtr Dystans do EMA200 — działa na widoku (po skanowaniu)
+        dist_min, dist_max = st.slider("Filtr: dystans do EMA200 (%)", -50, 100, (0, 100))
+        # Ustaw (0,100) => wszystko „powyżej EMA200”; np. (0,2) => max +2%
+
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"], index=0)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
@@ -235,8 +237,8 @@ with st.sidebar:
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
     with st.expander("Dodatkowe filtry (opcjonalne)", expanded=False):
-        # domyślnie wszystko OFF
-        f_maxdist_on = st.checkbox("Max dystans do EMA200", value=False)
+        # Wszystko domyślnie OFF — jak chciałeś
+        f_maxdist_on = st.checkbox("Max dystans do EMA200 (pre-scan)", value=False)
         f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
         f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
         f_align_on = st.checkbox("Zgranie średnich: Close > EMA50 > EMA200", value=False)
@@ -274,21 +276,22 @@ with st.sidebar:
         f_resist_on = st.checkbox("Bliskość oporu: min 3% do 3-mies. high", value=False)
         f_resist_min = st.number_input("— Min odległość do 3m high (%)", 0.0, 20.0, 3.0, step=0.5, format="%.1f")
 
-    with st.expander("Ranking i Tabela — wygląd", expanded=True):
+    with st.expander("Ranking, Tabela i Mobil", expanded=True):
         enable_rank = st.checkbox("Ranking (bez AI)", value=True)
         top_n = st.selectbox("Ile pozycji w TOP", [5, 10], index=1)
         rank_layout = st.selectbox("Układ rankingu", ["Kompakt (6/wiersz)", "Średni (4/wiersz)", "Wąski (3/wiersz)"], index=0)
-        fit_cols = st.checkbox("Dopasuj kolumny do szerokości", value=True)
+        fit_cols = st.checkbox("Dopasuj kolumny do szerokości (desktop)", value=True)
         table_height = st.slider("Wysokość tabeli (px)", 420, 900, 560, step=20)
+        mobile_mode = st.checkbox("✅ Tryb mobilny (lista zamiast tabeli)", value=False)
 
     run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
-# pamiętaj ważne rzeczy w stanie
-st.session_state["period"] = period
-st.session_state["vol_window"] = vol_window
+# stan
+st.session_state["period"] = locals().get("period", "1y")
+st.session_state["vol_window"] = locals().get("vol_window", 20)
 st.session_state.setdefault("selected_symbol", None)
-st.session_state.setdefault("selection_source", None)          # "rank" | "table"
-st.session_state.setdefault("last_table_selected", None)       # ostatni ticker wybrany w tabeli
+st.session_state.setdefault("selection_source", None)          # "rank" | "table" | "mobile"
+st.session_state.setdefault("last_table_selected", None)
 
 # =========================
 # FUNDAMENTY + SHORT (yfinance)
@@ -350,20 +353,16 @@ def fetch_fundamentals(ticker: str) -> dict:
         "total_cash": g("totalCash"),
         "current_ratio": g("currentRatio"),
         "quick_ratio": g("quickRatio"),
-        # --- SHORT (Yahoo) ---
+        # short
         "shares_short": g("sharesShort"),
         "short_ratio": g("shortRatio"),
         "short_percent_float": g("shortPercentOfFloat"),
         "shares_float": g("floatShares") or g("sharesFloat"),
     })
-
-    # trendy i rekomendacje (best effort)
     try:
         et = tk.earnings_trend
-        if isinstance(et, pd.DataFrame) and not et.empty:
-            col = "growth" if "growth" in et else None
-            if col:
-                data["forward_eps_growth"] = et[col].astype(float).dropna().iloc[-1]
+        if isinstance(et, pd.DataFrame) and not et.empty and "growth" in et:
+            data["forward_eps_growth"] = et["growth"].astype(float).dropna().iloc[-1]
     except Exception:
         pass
     try:
@@ -457,7 +456,7 @@ if run_scan:
         for i, t in enumerate(tickers_list, start=1):
             status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
 
-            if f_mcap_on:
+            if locals().get("f_mcap_on"):
                 mc = get_market_cap_fast(t)
                 if mc is None or not (f_mcap_min <= mc <= f_mcap_max):
                     progress.progress(i/len(tickers_list)); continue
@@ -481,63 +480,63 @@ if run_scan:
                     di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                         macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
 
-                # dodatkowe filtry (opcjonalne)
+                # opcjonalne pre-scan filtry
                 gap_ok = True
-                if f_gap_on and pd.notna(last.get("GapUpPct")):
+                if locals().get("f_gap_on") and pd.notna(last.get("GapUpPct")):
                     gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
 
                 maxdist_ok = True
-                if f_maxdist_on and pd.notna(last.get("DistEMA200Pct")):
+                if locals().get("f_maxdist_on") and pd.notna(last.get("DistEMA200Pct")):
                     maxdist_ok = (float(last.get("DistEMA200Pct")) <= f_maxdist_pct)
 
                 slope_ok = True
-                if f_slope_on and pd.notna(last.get("EMA200_Slope5")):
+                if locals().get("f_slope_on") and pd.notna(last.get("EMA200_Slope5")):
                     slope_ok = (float(last.get("EMA200_Slope5")) > 0)
 
                 align_ok = True
-                if f_align_on and pd.notna(last.get("EMA50")) and pd.notna(last.get("EMA200")) and pd.notna(last.get("Close")):
+                if locals().get("f_align_on") and pd.notna(last.get("EMA50")) and pd.notna(last.get("EMA200")) and pd.notna(last.get("Close")):
                     align_ok = (float(last.get("Close")) > float(last.get("EMA50")) > float(last.get("EMA200")))
 
                 macd_fresh_ok = True
-                if f_macd_fresh_on:
+                if locals().get("f_macd_fresh_on"):
                     hist = df["MACD_hist"].tail(int(f_macd_hist_up_days)+1).dropna()
                     hist_up = (hist.diff() > 0).tail(int(f_macd_hist_up_days)).all() if len(hist) >= (f_macd_hist_up_days+1) else False
                     macd_recent = macd_bullish_cross_recent(df, int(f_macd_fresh_look))
                     macd_fresh_ok = macd_recent and hist_up
 
                 rsi_up_ok = True
-                if f_rsi_up_on and pd.notna(last.get("RSI")) and len(df) >= 2 and pd.notna(df["RSI"].iloc[-2]):
+                if locals().get("f_rsi_up_on") and pd.notna(last.get("RSI")) and len(df) >= 2 and pd.notna(df["RSI"].iloc[-2]):
                     rsi_up_ok = bool(last.get("RSI") >= df["RSI"].iloc[-2])
 
                 minavg_ok = True
-                if f_minavg_on and pd.notna(last.get("AvgVolume")):
+                if locals().get("f_minavg_on") and pd.notna(last.get("AvgVolume")):
                     minavg_ok = (float(last.get("AvgVolume")) >= float(f_minavg_val))
 
                 vr_ok = True
                 vr_val = None
                 if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume")) > 0:
                     vr_val = float(last.get("Volume")) / float(last.get("AvgVolume"))
-                if f_vr_on and vr_val is not None:
-                    vr_ok = (vr_val >= float(f_vr_min)) and (vr_ok := (vr_val <= float(f_vr_max)))
+                if locals().get("f_vr_on") and vr_val is not None:
+                    vr_ok = (vr_val >= float(f_vr_min)) and (vr_val <= float(f_vr_max))
 
                 minprice_ok = True
-                if f_minprice_on and pd.notna(last.get("Close")):
+                if locals().get("f_minprice_on") and pd.notna(last.get("Close")):
                     minprice_ok = (float(last.get("Close")) >= float(f_minprice_val))
 
                 atr_ok = True
-                if f_atr_on and pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close"))>0:
+                if locals().get("f_atr_on") and pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close"))>0:
                     atr_pct = float(last.get("ATR")) / float(last.get("Close")) * 100.0
                     atr_ok = (atr_pct <= float(f_atr_max))
 
                 hhhl_ok = True
-                if f_hhhl_on and len(df) >= 3 and pd.notna(df["HH3"].iloc[-1]) and pd.notna(df["HL3"].iloc[-1]):
+                if locals().get("f_hhhl_on") and len(df) >= 3 and pd.notna(df["HH3"].iloc[-1]) and pd.notna(df["HL3"].iloc[-1]):
                     hhhl_ok = bool(df["HH3"].iloc[-1] and df["HL3"].iloc[-1])
 
                 resist_ok = True
-                if f_resist_on and pd.notna(last.get("RoomToHighPct")):
+                if locals().get("f_resist_on") and pd.notna(last.get("RoomToHighPct")):
                     resist_ok = (float(last.get("RoomToHighPct")) >= float(f_resist_min))
 
-                mcap_ok = True if not f_mcap_on else (mc is not None and (f_mcap_min <= mc <= f_mcap_max))
+                mcap_ok = True if not locals().get("f_mcap_on") else (mc is not None and (f_mcap_min <= mc <= f_mcap_max))
 
                 passed_all_filters = all([
                     gap_ok, maxdist_ok, slope_ok, align_ok, macd_fresh_ok, rsi_up_ok,
@@ -568,15 +567,14 @@ if run_scan:
         status.write("✅ Zakończono skan.")
         st.session_state.scan_results = pd.DataFrame(results)
 
-        # przywróć poprzedni wybór, jeśli nadal istnieje
+        # reset/selekcja po skanie: jeśli poprzedni wybór nie istnieje -> wyczyść
         if prev_symbol and prev_symbol in set(st.session_state.scan_results["Ticker"]):
             st.session_state["selected_symbol"] = prev_symbol
             st.session_state["selection_source"] = prev_source
         else:
-            if not prev_symbol:
-                st.session_state["selected_symbol"] = None
-                st.session_state["selection_source"] = None
-        # NIE resetuj last_table_selected – to pomaga wykryć „nowy” klik
+            st.session_state["selected_symbol"] = None
+            st.session_state["selection_source"] = None
+            st.session_state["last_table_selected"] = None
 
 # =========================
 # RANKING (bez AI)
@@ -628,7 +626,7 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# PRO: wejścia + podsumowania (w tym short z Yahoo)
+# PRO podsumowanie
 # =========================
 def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
     if df_full is None or df_full.empty: return (None, None)
@@ -729,7 +727,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         else:
             st.write("Dividend: **N/A**")
 
-    # --- Short interest (Yahoo) ---
     with st.expander("📉 Short interest (Yahoo)", expanded=False):
         ss = fn.get("shares_short")
         spf = fn.get("short_percent_float")
@@ -761,12 +758,12 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         for r in risks: st.write("- " + r)
 
 # =========================
-# WIDOK + TABELA + RANKING + WYKRESY
+# WIDOK + TABELA / LISTA + RANKING + WYKRESY
 # =========================
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # 1) Klasy wolumenu -> zawsze na początku
+    # 1) Klasy wolumenu
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -784,23 +781,26 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
-    # 2) Filtr wolumenu (widok)
-    if vol_filter != "Wszystkie":
+    # 2) Filtry widoku — KOLEJNOŚĆ MA ZNACZENIE
+    # a) wolumen
+    if locals().get("vol_filter") != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
-
-    # 3) „Pokaż tylko 💎💎💎” – na tym samym df_res co tabela i licznik
-    if only_three:
+    # b) tylko 💎💎💎
+    if locals().get("only_three"):
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
+    # c) nowy filtr dystansu do EMA200
+    df_res = df_res[pd.notna(df_res["DistEMA200Pct"])]
+    df_res = df_res[(df_res["DistEMA200Pct"] >= dist_min) & (df_res["DistEMA200Pct"] <= dist_max)]
 
-    # ===== RANKING (liczony na pełnych wynikach skanu, jak wcześniej) =====
-    if enable_rank:
-        rank_df = build_ranking(st.session_state.scan_results, rsi_min, rsi_max, top_n)
+    # ===== RANKING =====
+    if locals().get("enable_rank"):
+        rank_df = build_ranking(st.session_state.scan_results, rsi_min, rsi_max, locals().get("top_n", 10))
         st.session_state.rank_df = rank_df
-        st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
+        st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else locals().get('top_n',10)})")
         if rank_df.empty:
-            st.info("Brak kandydatów (💎💎💎 + aktywne filtry). Zmień parametry.")
+            st.info("Brak kandydatów (💎💎💎 + filtry). Zmień parametry.")
         else:
-            per_row = 6 if "Kompakt (6/wiersz)" in rank_layout else (4 if "Średni (4/wiersz)" in rank_layout else 3)
+            per_row = 6 if "Kompakt" in locals().get("rank_layout","") else (4 if "Średni" in rank_layout else 3)
             for start in range(0, len(rank_df), per_row):
                 row_slice = rank_df.iloc[start:start+per_row]
                 cols = st.columns(len(row_slice))
@@ -811,67 +811,76 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
                             st.session_state["selected_symbol"] = rr["Ticker"]
                             st.session_state["selection_source"] = "rank"
 
-    # ===== TABELA =====
-    view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
-
+    # ===== TABELA / LISTA =====
+    st.subheader("📋 Wyniki skanera")
     # porządek i sort do widoku
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     if not df_res.empty:
         df_res["Rank"] = df_res["Sygnał"].apply(_rank)
         df_res = df_res.sort_values(["Rank","Ticker"], ascending=[False, True]).drop(columns=["Rank"]).reset_index(drop=True)
 
-    # licznik = dokładnie to, co trafi do tabeli
-    st.subheader("📋 Wyniki skanera")
     st.write(
         f"<span class='pill'>Wyników: <b>{len(df_res)}</b></span>"
         f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
         f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
-        f"<span class='pill'>Okres: <b>{period}</b></span>"
-        f"<span class='pill'>Close>EMA200: <b>{'ON' if require_price_above_ema200 else 'OFF'}</b></span>",
+        f"<span class='pill'>Okres: <b>{locals().get('period','1y')}</b></span>"
+        f"<span class='pill'>Close>EMA200: <b>{'ON' if locals().get('require_price_above_ema200') else 'OFF'}</b></span>"
+        f"<span class='pill'>Dystans EMA200: <b>{dist_min}–{dist_max}%</b></span>",
         unsafe_allow_html=True
     )
 
-    # >>> NEW: dynamiczny key żeby wymusić rerender po filtrach
-    tick_tuple = tuple(df_res["Ticker"].tolist()) if not df_res.empty else ()
-    grid_key = f"grid_{only_three}_{vol_filter}_{len(df_res)}_{abs(hash(tick_tuple))%10000}"
+    if locals().get("mobile_mode"):
+        # >>> TRYB MOBILNY: zwykła lista z wyborem
+        tickers_list = df_res["Ticker"].tolist()
+        selected_from_mobile = st.selectbox("Wybierz spółkę", ["—"] + tickers_list, index=0)
+        if selected_from_mobile != "—":
+            st.session_state["selected_symbol"] = selected_from_mobile
+            st.session_state["selection_source"] = "mobile"
+        # mały podgląd tabeli
+        st.dataframe(df_res[["Ticker","Sygnał","Close","RSI","EMA200","DistEMA200Pct","VolRatio","Wolumen"]], use_container_width=True, hide_index=True)
+    else:
+        # >>> DESKTOP: AG Grid (stabilne key + model_changed)
+        view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
+        tick_tuple = tuple(df_res["Ticker"].tolist()) if not df_res.empty else ()
+        grid_key = f"grid_{locals().get('only_three',False)}_{locals().get('vol_filter','all')}_{dist_min}_{dist_max}_{len(df_res)}_{abs(hash(tick_tuple))%10000}"
 
-    gb = GridOptionsBuilder.from_dataframe(df_res[view_cols] if not df_res.empty else pd.DataFrame(columns=view_cols))
-    gb.configure_selection('single', use_checkbox=False)
-    gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')
-    grid_options = gb.build()
+        gb = GridOptionsBuilder.from_dataframe(df_res[view_cols] if not df_res.empty else pd.DataFrame(columns=view_cols))
+        gb.configure_selection('single', use_checkbox=False)
+        gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')
+        grid_options = gb.build()
 
-    grid_response = AgGrid(
-        df_res[view_cols] if not df_res.empty else pd.DataFrame(columns=view_cols),
-        gridOptions=grid_options,
-        update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.MODEL_CHANGED,  # <<< ważne
-        theme='alpine',
-        height=table_height,
-        fit_columns_on_grid_load=bool(fit_cols),
-        key=grid_key,
-    )
+        grid_response = AgGrid(
+            df_res[view_cols] if not df_res.empty else pd.DataFrame(columns=view_cols),
+            gridOptions=grid_options,
+            update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.MODEL_CHANGED,
+            theme='alpine',
+            height=locals().get("table_height",560),
+            fit_columns_on_grid_load=bool(locals().get("fit_cols", True)),
+            key=grid_key,
+        )
 
-    # jeżeli wybrany ticker zniknął po filtrach – wyczyść selekcję (zapobiega „pustce”)
-    visible_tickers = set(df_res["Ticker"]) if not df_res.empty else set()
-    if st.session_state.get("selected_symbol") and st.session_state["selected_symbol"] not in visible_tickers and st.session_state.get("selection_source") == "table":
-        st.session_state["selected_symbol"] = None
-        st.session_state["last_table_selected"] = None
-        st.session_state["selection_source"] = None
+        # jeśli wybrany ticker zniknął po filtrach i wybór był z tabeli -> wyczyść
+        visible_tickers = set(df_res["Ticker"]) if not df_res.empty else set()
+        if st.session_state.get("selected_symbol") and st.session_state["selected_symbol"] not in visible_tickers and st.session_state.get("selection_source") == "table":
+            st.session_state["selected_symbol"] = None
+            st.session_state["last_table_selected"] = None
+            st.session_state["selection_source"] = None
 
-    # Odczyt selekcji z tabeli: przejmij ster TYLKO przy nowym wyborze
-    current_table_select = None
-    if isinstance(grid_response, dict):
-        sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
-        if sel:
-            current_table_select = sel[0]["Ticker"]
-    elif hasattr(grid_response, "selected_rows"):
-        sel = getattr(grid_response, "selected_rows", []) or []
-        if sel:
-            current_table_select = sel[0]["Ticker"]
+        # odczyt selekcji z tabeli
+        current_table_select = None
+        if isinstance(grid_response, dict):
+            sel = grid_response.get("selected_rows") or grid_response.get("selectedRows") or []
+            if sel:
+                current_table_select = sel[0]["Ticker"]
+        elif hasattr(grid_response, "selected_rows"):
+            sel = getattr(grid_response, "selected_rows", []) or []
+            if sel:
+                current_table_select = sel[0]["Ticker"]
 
-    if current_table_select and current_table_select != st.session_state.get("last_table_selected"):
-        st.session_state["last_table_selected"] = current_table_select
-        st.session_state["selected_symbol"] = current_table_select
-        st.session_state["selection_source"] = "table"
+        if current_table_select and current_table_select != st.session_state.get("last_table_selected"):
+            st.session_state["last_table_selected"] = current_table_select
+            st.session_state["selected_symbol"] = current_table_select
+            st.session_state["selection_source"] = "table"
 
     # -------- WYKRESY + PODSUMOWANIE PRO --------
     sym = st.session_state.get("selected_symbol")
@@ -889,12 +898,12 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
             m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
-            dist = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
-            m3.metric("Dystans do EMA200", f"{dist:.2f}%" if dist is not None else "—")
-            macd_cross_here = macd_bullish_cross_recent(df_sel, macd_lookback)
-            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
+            distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
+            m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
+            macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
+            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), locals().get("use_volume",True))
             di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                                     macd_cross_here, vol_ok_here, signal_mode, rsi_min, rsi_max)
+                                     macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
             m4.metric("Sygnał", di_here)
 
             st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
