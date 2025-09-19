@@ -30,16 +30,18 @@ st.markdown(
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
 
-    /* ===== Auto-mobile: układ jednokolumnowy na wąskich ekranach ===== */
+    /* ===== Auto-mobile: układ jednokolumnowy i pełna szerokość przycisków na wąskich ekranach ===== */
     @media (max-width: 820px){
       .block-container{ padding-left:0.6rem; padding-right:0.6rem; }
       [data-testid="column"]{ width:100% !important; flex: 1 0 100% !important; display:block !important; }
-      .stPlotlyChart{ margin-left:auto; margin-right:auto; }
+      .stPlotlyChart, .stMetric, .stButton{ margin-left:auto; margin-right:auto; width:100%; }
+      .stButton>button{ width:100%; }
     }
 
-    /* ===== Klasy do zwijania sidebara (sterowane flagą w session_state) ===== */
-    .hide-sidebar [data-testid="stSidebar"]{ display:none !important; }
-    .hide-sidebar .block-container{ max-width: 1200px; }
+    /* ===== Wyśrodkowanie ZAWARTOŚCI st.dataframe (komórki + nagłówki) ===== */
+    [data-testid="stDataFrame"] thead th div{ justify-content:center !important; text-align:center !important; }
+    [data-testid="stDataFrame"] td div[data-testid="stMarkdownContainer"]{ text-align:center !important; }
+    [data-testid="stDataFrame"] div[role="gridcell"]{ justify-content:center !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -212,7 +214,7 @@ def vol_confirmation(volume, avg_volume, require: bool) -> bool:
     if pd.isna(volume) or pd.isna(avg_volume): return False
     return volume > avg_volume
 
-# Prosta kategoryzacja: Wysoki / Średni / Niski (na bazie VolRatio=Volume/AvgVolume)
+# Prosta kategoryzacja: Wysoki / Średni / Niski (VolRatio = Volume/AvgVolume)
 def volume_label_from_ratio_simple(vr: Optional[float]) -> str:
     if vr is None or pd.isna(vr):
         return "Średni"
@@ -262,8 +264,10 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
 # =========================
 # SIDEBAR — USTAWIENIA + WYGLĄD
 # =========================
+st.session_state.setdefault("scanner_expanded", True)  # kontrola zwijania skanera
+
 with st.sidebar:
-    with st.expander("Skaner", expanded=True):
+    with st.expander("Skaner", expanded=st.session_state["scanner_expanded"]):
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI (twardy)", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
@@ -276,7 +280,7 @@ with st.sidebar:
 
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
 
-        # >>> Filtr wolumenu z „Wszystkie”
+        # Filtr wolumenu z „Wszystkie”
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Wysoki", "Średni", "Niski"], index=0)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
@@ -313,26 +317,25 @@ with st.sidebar:
         f_resist_on = st.checkbox("Bliskość oporu: min 3% do 3-mies. high", value=False)
         f_resist_min = st.number_input("— Min odległość do 3m high (%)", 0.0, 20.0, 3.0, step=0.5, format="%.1f")
 
-    with st.expander("Ranking i Mobil", expanded=True):
+    with st.expander("Ranking i Mobil (auto)", expanded=True):
         enable_rank = st.checkbox("Ranking (bez AI)", value=True)
         top_n = st.selectbox("Ile pozycji w TOP", [5, 10], index=1)
         rank_layout = st.selectbox("Układ rankingu", ["Kompakt (6/wiersz)", "Średni (4/wiersz)", "Wąski (3/wiersz)"], index=0)
-        # Checkbox zostawiamy, ale układ i tak jest responsywny przez CSS @media:
-        mobile_mode = st.checkbox("✅ Tryb mobilny (lista + selectbox)", value=False, help="Widok automatycznie składa się na małych ekranach.")
+        # Tryb mobilny działa automatycznie przez CSS – bez przełączników.
 
-    run_scan = st.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
+    # Przycisk u góry sidebara do ręcznego zwinięcia/rozwinięcia skanera
+    if st.button("↕️ Zwiń/Rozwiń skaner (sidebar)", use_container_width=True):
+        st.session_state["scanner_expanded"] = not st.session_state["scanner_expanded"]
+        st.rerun()
+
+run_scan = st.sidebar.button("🚀 Uruchom skaner", use_container_width=True, type="primary")
 
 # ===== STAN
 st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
 st.session_state.setdefault("selection_source", None)
-st.session_state.setdefault("hide_sidebar", False)
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
-
-# Jeśli włączony zwijak, nałóż klasę na body
-container_cls = " hide-sidebar" if st.session_state.get("hide_sidebar") else ""
-st.markdown(f"<div class='{container_cls}'>", unsafe_allow_html=True)
 
 # =========================
 # PRO podsumowanie
@@ -646,7 +649,7 @@ if run_scan:
                 "VolRatio": round(vr_val, 2) if vr_val is not None else None,
                 "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
                 "MarketCap": float(mc) if mc is not None else None,
-                "ShortPctFloat": (float(spf)*100.0 if spf is not None else None),
+                "ShortPctFloat": (float(spf)*100.0 if spf is not None else None),  # %
             })
             progress.progress(i/len(tickers_list))
         status.write("✅ Zakończono skan.")
@@ -705,12 +708,12 @@ raw = st.session_state.get("scan_results_raw", pd.DataFrame())
 if not raw.empty:
     df_view = raw.copy()
 
-    # Kolumna "Wolumen" (z VolRatio)
+    # Kolumna "Wolumen" (kategorie z VolRatio)
     df_view["Wolumen"] = df_view["VolRatio"].apply(volume_label_from_ratio_simple)
     if only_three:
         df_view = df_view[df_view["Sygnał"] == "💎💎💎"]
-    # Filtr: „Wszystkie” pomija filtrowanie
-    if vol_filter != "Wszystkie":
+    # Filtr wolumenu (Wszystkie pomija)
+    if 'vol_filter' in locals() and vol_filter != "Wszystkie":
         df_view = df_view[df_view["Wolumen"] == vol_filter]
 
     # ===== RANKING (góra) =====
@@ -740,7 +743,7 @@ if not raw.empty:
         st.session_state["selected_symbol"] = sel
         st.session_state["selection_source"] = "selectbox"
 
-    # ===== TABELA — POD RANKINGIEM (wyśrodkowana) =====
+    # ===== TABELA — POD RANKINGIEM (wyśrodkowana ZAWARTOŚĆ) =====
     st.markdown("---")
     st.subheader("📋 Wyniki skanera (lista)")
     st.write(
@@ -764,14 +767,17 @@ if not raw.empty:
     header_h = 46
     target_h = min(700, max(240, header_h + rows*row_h))
 
-    c_left, c_mid, c_right = st.columns([1, 6, 1])
-    with c_mid:
-        st.dataframe(
-            df_show[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]],
-            use_container_width=True,
-            hide_index=True,
-            height=target_h
-        )
+    # Użycie pandas Styler do centrowania treści (fallback zapewnia CSS powyżej)
+    styled = df_show.style.set_properties(**{"text-align": "center"}).set_table_styles(
+        [{"selector": "th", "props": [("text-align", "center")]}]
+    )
+
+    st.dataframe(
+        styled[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]],
+        use_container_width=True,
+        hide_index=True,
+        height=target_h
+    )
 
     # ===== PODSUMOWANIE + WYKRESY (na końcu) =====
     sym = st.session_state.get("selected_symbol")
@@ -810,9 +816,8 @@ if not raw.empty:
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
 
-# ===== Dół strony: zwijak sidebara =====
-with st.expander("🧰 Ustawienia widoku (dół strony)", expanded=False):
-    st.checkbox("Zwiń sidebar", key="hide_sidebar", help="Schowaj/lekkie powiększenie obszaru roboczego.")
-
-# Zamknięcie wrappera body-class
-st.markdown("</div>", unsafe_allow_html=True)
+# ===== PRZYCISK NA DOLE: ten sam toggle co u góry (zwija/rozwija ekspander „Skaner”) =====
+st.markdown("---")
+if st.button("↕️ Zwiń/Rozwiń skaner (filtry)", use_container_width=True):
+    st.session_state["scanner_expanded"] = not st.session_state["scanner_expanded"]
+    st.rerun()
