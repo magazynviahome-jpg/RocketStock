@@ -236,7 +236,7 @@ def volume_label_from_ratio_simple(vr: Optional[float]) -> str:
     return "Niski"
 
 # =========================
-# WYKRESy
+# WYKRESY
 # =========================
 def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
@@ -538,27 +538,46 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     if base_row.empty:
         st.info("Brak danych do podsumowania."); return
     row = base_row.iloc[0]
-    close = row.get("Close"); rsi=row.get("RSI"); ema=row.get("EMA200"); ema50=row.get("EMA50")
-    vr=row.get("VolRatio"); macd=row.get("MACD"); sig=row.get("MACD_signal")
+    close = row.get("Close"); rsi=row.get("RSI"); ema=row.get("EMA200")
+    vr=row.get("VolRatio")
     dist_pct = _pct_from(close, ema)
-    macd_delta = (macd - sig) if pd.notna(macd) and pd.notna(sig) else None
     df_full = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
     entry_break, entry_pull = compute_entries(df_full)
     fn = fetch_fundamentals(sym)
     cur = fn.get("currency") or "USD"
 
+    # ——— Nagłówek
     cap_txt = _fmt_money(fn.get("market_cap"), cur)
     title_bits = [sym, fn.get("long_name") or "", f"• {fn.get('industry') or '—'}", f"• {fn.get('country') or '—'}", f"• MC: {cap_txt}"]
     st.markdown("**" + "  ".join([x for x in title_bits if x]) + f"  •  waluta: {cur}**")
 
+    # ——— Dane z listy (WSZYSTKIE z tabeli)
+    wolumen_cat = volume_label_from_ratio_simple(vr)
+    mc_b = row.get("MarketCap")
+    mc_b_disp = f"{round(mc_b/1e9, 2)}" if (mc_b is not None and not pd.isna(mc_b)) else "—"
+    short_pct = row.get("ShortPctFloat")
+    st.markdown("**Dane z listy**")
+    colA, colB, colC, colD = st.columns(4)
+    with colA:
+        st.write(f"Sygnał: **{row.get('Sygnał') or '—'}**")
+        st.write(f"Close: **{close:.2f}**" if pd.notna(close) else "Close: **—**")
+    with colB:
+        st.write(f"RSI: **{rsi:.2f}**" if pd.notna(rsi) else "RSI: **—**")
+        st.write(f"EMA200: **{ema:.2f}**" if pd.notna(ema) else "EMA200: **—**")
+    with colC:
+        st.write(f"Dist EMA200 %: **{dist_pct:.2f}%**" if dist_pct is not None else "Dist EMA200 %: **—**")
+        st.write(f"Wolumen: **{wolumen_cat}**")
+    with colD:
+        st.write(f"Short %: **{short_pct:.2f}%**" if short_pct is not None else "Short %: **—**")
+        st.write(f"MC (B USD): **{mc_b_disp}**")
+
+    # ——— Szybki snapshot wskaźników
     snap = []
-    if pd.notna(close): snap.append(f"Close **${close:.2f}**")
-    if pd.notna(rsi):   snap.append(f"RSI **{rsi:.1f}** (zakres {rsi_min}–{rsi_max})")
     if dist_pct is not None: snap.append(f"vs EMA200 **{dist_pct:.2f}%**")
     if pd.notna(vr):    snap.append(f"VR **{vr:.2f}**")
-    if macd_delta is not None: snap.append(f"ΔMACD **{macd_delta:.3f}**")
-    st.write(" · ".join(snap))
+    st.write(" · ".join(snap) if snap else "")
 
+    # ——— Proponowane wejścia
     reco = None
     if dist_pct is not None and pd.notna(rsi):
         if dist_pct > 8 or rsi >= (rsi_max - 1): reco = "Preferuj **pullback** (mniejszy pościg, lepszy RR)."
@@ -571,6 +590,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         for ln in entry_lines: st.write(ln)
         if reco: st.write(reco)
 
+    # ——— Fundamenty (jak było)
     with st.expander("Wycena i jakość", expanded=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -619,7 +639,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         row1 = f"Shares short: **{int(ss):,}**" if ss not in (None, float('nan')) else "Shares short: **N/A**"
         row1 = row1.replace(",", " ")
         st.write(row1)
-        st.write(f"Short % float: **{spf*100:.2f}%**" if spf not in (None, float('nan')) else "Short % float: **N/A**")
+        st.write(f"Short % float (Yahoo): **{spf*100:.2f}%**" if spf not in (None, float('nan')) else "Short % float (Yahoo): **N/A**")
         st.write(f"Short ratio (days to cover): **{sr:.2f}**" if sr not in (None, float('nan')) else "Short ratio: **N/A**")
         if flt not in (None, float('nan')):
             try:
@@ -645,16 +665,25 @@ if run_scan:
                 progress.progress(i/len(tickers_list)); continue
 
             last = df.iloc[-1]
-            # RSI twardo
+
+            # RSI twardo (prescan) — jeśli poza zakresem, nie dodajemy do wyników
             rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
+            if not rsi_ok:
+                progress.progress(i/len(tickers_list))
+                continue
+
             # Close > EMA200 + cap
             price_ok = True
+            dist_pct_now = None
             if require_price_above_ema200:
                 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200"))>0:
                     dist_pct_now = (float(last.get("Close"))/float(last.get("EMA200"))-1.0)*100.0
                     price_ok = (dist_pct_now >= 0.0) and (dist_pct_now <= float(ema_dist_cap))
                 else:
                     price_ok = False
+            if require_price_above_ema200 and not price_ok:
+                progress.progress(i/len(tickers_list))
+                continue
 
             # Dodatkowe (opcjonalne)
             extra_ok = True
@@ -672,7 +701,7 @@ if run_scan:
                 mc_tmp = get_market_cap_fast(t)
                 extra_ok = extra_ok and (mc_tmp is not None) and (float(f_mcap_min) <= mc_tmp <= float(f_mcap_max))
 
-            # Short float % (0–1 z Yahoo) — filtr zakresu
+            # Short float % (zakres, 0–1 z Yahoo)
             spf_tmp = None
             if f_short_on:
                 spf_tmp = get_short_percent_float(t)  # 0..1
@@ -690,7 +719,8 @@ if run_scan:
             if extra_ok and f_resist_on and pd.notna(last.get("RoomToHighPct")):
                 extra_ok = float(last.get("RoomToHighPct")) >= float(f_resist_min)
 
-            if not (rsi_ok and price_ok and extra_ok):
+            # Scoring
+            if not extra_ok:
                 di = "–"; macd_cross = False; vol_ok = False
             else:
                 vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
@@ -773,9 +803,6 @@ PRZEWODNIK_MD = r"""
 tab_scan, tab_guide = st.tabs(["Skaner", "Przewodnik"])
 
 with tab_scan:
-    # =========================
-    # WIDOK: RANKING → SELECTBOX → TABELA → PODSUMOWANIE + WYKRESY
-    # =========================
     raw = st.session_state.get("scan_results_raw", pd.DataFrame())
     if not raw.empty:
         df_view = raw.copy()
@@ -807,32 +834,33 @@ with tab_scan:
                                 st.session_state["selection_source"] = "rank"
                                 st.session_state["selectbox_symbol"] = "—"   # reset selectboxa
 
-        # ===== SELECTBOX (zawsze nad tabelą) =====
-        st.subheader("Wybierz spółkę do podsumowania")
-        tickers_list = df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist()
-        sel = st.selectbox("Wpisz lub wybierz ticker", ["—"] + tickers_list, key="selectbox_symbol")
-        if sel != "—":
-            st.session_state["selected_symbol"] = sel
-            st.session_state["selection_source"] = "selectbox"
+        # ===== Wybór + sortowanie OBOK SIEBIE =====
+        st.subheader("Wybierz spółkę i sortowanie")
+        sort_cols = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
+        col_left, col_right = st.columns([2, 1])
+        with col_left:
+            tickers_list = df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist()
+            sel = st.selectbox("Spółka", ["—"] + tickers_list, key="selectbox_symbol")
+            if sel != "—":
+                st.session_state["selected_symbol"] = sel
+                st.session_state["selection_source"] = "selectbox"
+        with col_right:
+            st.markdown("**Sortowanie**")
+            sort_by = st.selectbox("Kolumna", sort_cols, index=0, key="sort_by")
+            sort_dir = st.radio("Kierunek", ["Rosnąco","Malejąco"], index=0, horizontal=True, key="sort_dir")
 
         # ===== TABELA (lewy align + scroll h) =====
         st.markdown("---")
         st.subheader("Wyniki skanera (lista)")
-        st.write(
+        pills = (
             f"<span class='pill'>Wyników: <b>{len(df_view)}</b></span>"
             f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
             f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
             f"<span class='pill'>Okres: <b>{period}</b></span>"
             f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>"
-            + (f"<span class='pill'>Short float: <b>{f_short_min}–{f_short_max}%</b></span>" if f_short_on else ""),
-            unsafe_allow_html=True
         )
-
-        # --- SORTOWANIE BEZ ag-Grid ---
-        st.markdown("##### Sortowanie listy")
-        sort_cols = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
-        sort_by = st.selectbox("Sortuj po", sort_cols, index=0, key="sort_by")
-        sort_dir = st.radio("Kierunek", ["Rosnąco","Malejąco"], index=0, horizontal=True, key="sort_dir")
+        pills += (f"<span class='pill'>Short float: <b>{f_short_min}–{f_short_max}%</b></span>" if f_short_on else "")
+        st.write(pills, unsafe_allow_html=True)
 
         df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","MarketCap","ShortPctFloat"]].copy()
         df_show.rename(columns={"ShortPctFloat": "Short%", "MarketCap": "MC (B USD)"}, inplace=True)
@@ -841,7 +869,7 @@ with tab_scan:
             if c in df_show.columns:
                 df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
 
-        # zastosuj sortowanie
+        # sort
         ascending = (sort_dir == "Rosnąco")
         if sort_by in df_show.columns:
             df_show = df_show.sort_values(by=sort_by, ascending=ascending, na_position="last", kind="mergesort")
@@ -884,7 +912,8 @@ with tab_scan:
 
                 st.markdown("### Podsumowanie")
                 try:
-                    render_summary_pro(sym, raw, rsi_min, rsi_max)
+                    # UWAGA: tu przekazujemy df_view (lista po filtrach) aby „Dane z listy” zgadzały się z tabelą
+                    render_summary_pro(sym, df_view, rsi_min, rsi_max)
                 except Exception as e:
                     st.warning(f"Nie udało się zbudować Podsumowania: {e}")
 
