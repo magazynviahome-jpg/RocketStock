@@ -30,19 +30,30 @@ st.markdown(
     .pill{ padding:2px 8px; border-radius:999px; background:#f5f3ff; color:#4c1d95; margin-right:6px; }
     .small{ font-size:12px; color:#6b7280; }
 
-    /* Auto-mobile dopasowania */
+    /* Mobile dopasowania */
     @media (max-width: 820px){
       .block-container{ padding-left:0.6rem; padding-right:0.6rem; }
       [data-testid="column"]{ width:100% !important; flex: 1 0 100% !important; display:block !important; }
       .stPlotlyChart, .stMetric, .stButton{ margin-left:auto; margin-right:auto; width:100%; }
       .stButton>button{ width:100%; }
     }
+
+    /* Przycisk zwijania sidebara (floating) */
+    .sidebar-toggle{
+      position: fixed; right: 12px; bottom: 72px;
+      background: #fff; border:1px solid #e5e7eb; border-radius:10px;
+      padding: 8px 12px; font-weight:600; cursor:pointer;
+      box-shadow: 0 4px 16px rgba(0,0,0,.08);
+      z-index: 100050;  /* wyżej niż sidebar i stopka */
+    }
+    .sidebar-toggle:hover{ background:#f9fafb; }
+
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ——— PRZYKLEJONA STOPKA PRAWNA (Opcja A) ———
+# ——— PRZYKLEJONA STOPKA PRAWNA (z podbitym z-index, żeby nie chowała się pod sidebarem) ———
 st.markdown(
     """
     <style>
@@ -50,10 +61,10 @@ st.markdown(
         position:fixed; left:0; right:0; bottom:0;
         padding:8px 14px; background:rgba(0,0,0,.04);
         border-top:1px solid rgba(0,0,0,.07);
-        font-size:12px; color:#6b7280; z-index:9999;
+        font-size:12px; color:#6b7280; z-index:100000; /* > sidebar */
         backdrop-filter:saturate(120%) blur(2px);
       }
-      /* odsuń treść, żeby stopka nie nachodziła na UI */
+      /* odsunięcie kontentu od dołu, by stopka nie nachodziła */
       .block-container { padding-bottom: 56px; }
       @media (max-width: 820px){
         .legal-footer{ font-size:11px; padding:8px 10px; }
@@ -66,6 +77,26 @@ st.markdown(
       w rozumieniu obowiązujących przepisów. Decyzje inwestycyjne podejmujesz samodzielnie i na własne ryzyko.
       Rozważ konsultację z licencjonowanym doradcą. Inwestowanie wiąże się z ryzykiem utraty części lub całości kapitału.
     </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# ——— PRZYCISK ZWIJANIA/ROZWIJANIA SIDEBARA (klik w natywny toggle) ———
+st.markdown(
+    """
+    <button class="sidebar-toggle" id="rs-toggle">Zwiń / rozwiń panel</button>
+    <script>
+      // Spróbuj znaleźć kilka możliwych miejsc dla przycisku collapse
+      function clickSidebarToggle(){
+        const a = document.querySelector('[data-testid="stSidebarCollapseButton"] button');
+        const b = document.querySelector('[data-testid="stHeader"] button[title*="Hide sidebar"]');
+        const c = document.querySelector('button[kind="header"]'); // fallback dla starszych wersji
+        if(a){ a.click(); return; }
+        if(b){ b.click(); return; }
+        if(c){ c.click(); return; }
+      }
+      document.getElementById('rs-toggle')?.addEventListener('click', clickSidebarToggle);
+    </script>
     """,
     unsafe_allow_html=True
 )
@@ -332,8 +363,6 @@ def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
 
       @media (max-width: 820px) {{
         .rs-table th, .rs-table td {{ padding:10px 10px; font-size:13px; }}
-        /* Jeśli wolisz zawijanie tekstu zamiast scrolla, odkomentuj:
-        .rs-table th, .rs-table td {{ white-space:normal; }} */
       }}
     </style>
     """
@@ -389,7 +418,6 @@ with st.sidebar:
         f_resist_min = st.number_input("— Min odległość do 3m high (%)", 0.0, 20.0, 3.0, step=0.5, format="%.1f")
 
         st.markdown("---")
-        # przeniesione tu:
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
 
@@ -404,7 +432,7 @@ with st.sidebar:
 st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
 st.session_state.setdefault("selection_source", None)
-st.session_state.setdefault("selectbox_symbol", "—")   # ważne dla konfliktu wyborów
+st.session_state.setdefault("selectbox_symbol", "—")
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
 
@@ -482,7 +510,6 @@ def fetch_fundamentals(ticker: str) -> dict:
         "total_cash": g("totalCash"),
         "current_ratio": g("currentRatio"),
         "quick_ratio": g("quickRatio"),
-        # short
         "shares_short": g("sharesShort"),
         "short_ratio": g("shortRatio"),
         "short_percent_float": g("shortPercentOfFloat"),
@@ -583,11 +610,11 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     if entry_break is not None: entry_lines.append(f"**Wejście (breakout):** ${entry_break:.2f}  _(max(H20, Close) + 0.10×ATR)_")
     if entry_pull  is not None: entry_lines.append(f"**Wejście (pullback):** ${entry_pull:.2f}  _(EMA bazowa + 0.10×ATR)_")
     if entry_lines or reco:
-        st.markdown("**🎯 Proponowane wejścia**")
+        st.markdown("**Proponowane wejścia**")
         for ln in entry_lines: st.write(ln)
         if reco: st.write(reco)
 
-    with st.expander("📊 Wycena i jakość", expanded=True):
+    with st.expander("Wycena i jakość", expanded=True):
         col1, col2, col3 = st.columns(3)
         with col1:
             st.write(f"P/E (TTM): **{nz(fn.get('trailing_pe'),'N/A')}**")
@@ -608,7 +635,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
             st.write(f"Oper. Margin: **{_fmt_pct(om)}**")
             st.write(f"Net Margin: **{_fmt_pct(pm)}**")
 
-    with st.expander("📈 Zwroty i ryzyko", expanded=False):
+    with st.expander("Zwroty i ryzyko", expanded=False):
         col1, col2, col3 = st.columns(3)
         with col1:
             st.write(f"1M: **{fn.get('ret_1m'):.1f}%**" if fn.get("ret_1m") is not None else "1M: **N/A**")
@@ -619,7 +646,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         with col3:
             st.write(f"Max DD (1Y): **{fn.get('max_dd_1y'):.1f}%**" if fn.get("max_dd_1y") is not None else "Max DD (1Y): **N/A**")
 
-    with st.expander("🗓️ Wydarzenia i dywidendy", expanded=False):
+    with st.expander("Wydarzenia i dywidendy", expanded=False):
         st.write("Earnings: **N/A**")
         div_y = fn.get("div_yield")
         if div_y is not None:
@@ -627,7 +654,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         else:
             st.write("Dividend: **N/A**")
 
-    with st.expander("📉 Short interest (Yahoo)", expanded=False):
+    with st.expander("Short interest (Yahoo)", expanded=False):
         ss = fn.get("shares_short")
         spf = fn.get("short_percent_float")
         sr  = fn.get("short_ratio")
@@ -773,106 +800,77 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# ZAKŁADKI: SKANER / PRZEWODNIK
+# ZAKŁADKI: SKANER / PRZEWODNIK (bez emoji, klarownie)
 # =========================
 PRZEWODNIK_MD = r"""
-# 📘 Przewodnik użytkownika – RocketStock
+# Przewodnik użytkownika – RocketStock
 
-## Co robi skaner?
-Skaner przegląda spółki z NASDAQ i dla każdej liczy popularne wskaźniki. Na ich podstawie nadaje **ocenę sygnału** (💎), pokazuje **ranking** i pozwala podejrzeć **wykresy** oraz **podsumowanie spółki**.
+## RSI (Relative Strength Index)
+- **Co to:** „siła” ruchu ceny w skali 0–100 (zwykle 14 sesji).
+- **Jak czytać:** **> 70** wykupienie, **30–50** neutralnie/akumulacja, **< 30** wyprzedanie.
+- **W aplikacji:** jeśli RSI jest **poza** Twoim zakresem (np. **30–50**), spółka **nie dostaje sygnału**.
 
----
+## EMA200 (Exponential Moving Average – 200 sesji)
+- **Co to:** długoterminowa średnia trendu.
+- **Jak czytać:** **Close > EMA200** = po „byczej” stronie; bardzo daleko nad EMA200 = ryzyko „pościgu”.
+- **W aplikacji:** możesz wymagać Close > EMA200 i ustawić **Max % nad EMA200**.
 
-## Ikony i oceny (💎 Diamenty)
-- **💎💎💎 – mocny kandydat:** spełnia kluczowe warunki (trend, momentum, wolumen).
-- **💎💎 – dobry.**
-- **💎 – warunkowy.**
-- **–** brak sygnału (np. RSI poza zakresem).
+## EMA50
+- **Co to:** średnia krótszego horyzontu.
+- **W aplikacji:** wykorzystywana m.in. do wejść **pullback**.
 
-Na ocenę wpływają: położenie ceny względem **EMA200**, **RSI** w ustawionym zakresie, świeże **przecięcie MACD w górę** oraz **potwierdzenie wolumenem** (jeśli włączone).
+## MACD (Moving Average Convergence/Divergence)
+- **Co to:** wskaźnik tempa zmiany trendu (linia MACD, linia sygnałowa, histogram).
+- **Jak czytać:** **bullish cross** = MACD przecina **w górę** linię sygnałową (często start impetu).
+- **W aplikacji:** możesz wymagać, by przecięcie było **w ostatnich N dniach**.
 
----
+## Wolumen / AvgVolume / VolRatio
+- **Definicja VolRatio:** dzisiejszy wolumen / średni wolumen (MA20/MA50).
+- **Kategorie:** **Wysoki** (≥ 1.2×), **Średni** (0.8–1.2×), **Niski** (< 0.8×).
+- **W aplikacji:** opcja „Wymagaj potwierdzenia wolumenem” szuka sesji **powyżej średniej**.
 
-## Słowniczek wskaźników (co to znaczy w praktyce)
+## ATR i ATR% (Average True Range)
+- **Co to:** miara zmienności.
+- **ATR%:** ATR / Close × 100% — jak „szarpie” wykres.
+- **W aplikacji:** filtrem **Max ATR%** odrzucisz najbardziej nerwowe walory.
 
-### RSI (Relative Strength Index)
-**Co to:** „siła” ruchu ceny w skali **0–100** (zwykle 14 sesji).  
-**Jak czytać:** >70 wykupienie, 30–50 neutralnie/akumulacja, <30 wyprzedanie.  
-**W apce:** jeśli RSI jest **poza** Twoim zakresem (np. 30–50), spółka **nie dostaje sygnału**.
+## GAP UP %
+- **Co to:** różnica między dzisiejszym otwarciem a wczorajszym zamknięciem (w %).
+- **W aplikacji:** duże luki możesz przefiltrować limitem „Max GAP UP %”.
 
-### EMA200 (Exponential Moving Average – 200 sesji)
-**Co to:** długoterminowa średnia trendu.  
-**Jak czytać:** **Close > EMA200** = po „byczej” stronie; zbyt daleko nad EMA200 = ryzyko „pościgu”.  
-**W apce:** możesz wymagać Close > EMA200 i ustawić **Max % nad EMA200**.
+## DistEMA200Pct
+- **Co to:** o ile (%) cena jest powyżej/poniżej EMA200.
+- **W aplikacji:** **Max % nad EMA200** ogranicza „pościg” za ceną.
 
-### EMA50
-Średnia krótszego horyzontu. Wykorzystywana m.in. do **wejść pullback**.
+## High_3m i RoomToHighPct
+- **Co to:** najwyższa cena z ~3 miesięcy oraz „oddech” do tego poziomu (w %).
+- **W aplikacji:** możesz wymagać min. odległości, aby nie kupować pod opór.
 
-### MACD (Moving Average Convergence/Divergence)
-**Co to:** wskaźnik tempa zmiany trendu (linia MACD, linia sygnałowa, histogram).  
-**Jak czytać:** **Bullish cross** = MACD przecina **w górę** linię sygnałową (często start impetu).  
-**W apce:** możesz wymagać, by takie przecięcie było **w ostatnich N dniach**.
+## HH3 / HL3
+- **Co to:** trzy kolejne rosnące szczyty i trzy kolejne rosnące dołki.
+- **Znaczenie:** „zdrowa” sekwencja wzrostowa.
 
-### Wolumen, AvgVolume, VolRatio
-**VolRatio = Dzisiejszy wolumen / Średni wolumen (MA20/MA50)**  
-**Kategorie:** **Wysoki** (≥1.2×), **Średni** (0.8–1.2×), **Niski** (<0.8×).  
-**W apce:** opcja „Wymagaj potwierdzenia wolumenem” szuka sesji **powyżej średniej**.
+## Diamenty (ocena sygnału)
+- **Co wpływa:** pozycja ceny vs **EMA200** (wg trybu), **RSI** w zakresie, świeży **MACD cross**, **wolumen > średnia** (jeśli wymagany).
+- **Progi:** 💎💎💎 / 💎💎 / 💎 / – (informacja techniczna, nie rekomendacja).
 
-### ATR i ATR% (Average True Range)
-**Co to:** miara **zmienności**.  
-**ATR% = ATR / Close × 100%** — jak „szarpie” wykres.  
-**W apce:** filtrem **Max ATR%** odrzucisz najbardziej nerwowe walory.
+## Ranking
+- **Co to:** TOP kandydaci spośród 💎💎💎 (wynik 0–100).
+- **Składniki wyniku:** rozsądny dystans nad EMA200, bliskość środka zakresu RSI, aktywność wolumenu, płynność.
 
-### GAP UP %
-Różnica między dzisiejszym otwarciem a wczorajszym zamknięciem (w %). Duże luki możesz filtrować.
-
-### DistEMA200Pct
-**%** o ile cena jest nad/pod EMA200. Ustawiamy **Max % nad EMA200** by nie gonić zbyt wysoko.
-
-### High_3m i RoomToHighPct
-Najwyższa cena z ~3 miesięcy oraz „oddech” do tego poziomu (w %). Zbyt blisko oporu bywa trudne do wybicia.
-
-### HH3 / HL3
-Trzy rosnące szczyty i trzy rosnące dołki — „zdrowa” sekwencja wzrostowa.
-
----
-
-## Tryby sygnału
-- **Konserwatywny:** wymagaj **Close > EMA200**.  
-- **Umiarkowany:** tolerancja do **–0.5%** pod EMA200.  
-- **Agresywny:** tolerancja do **–2%** pod EMA200.  
-Dodatkowo: RSI w zakresie, świeży **MACD cross** (jeśli wystąpił), wolumen > średnia (jeśli wymagany).
-
----
-
-## Ranking (np. „1. AMD · 97.3”)
-Ranking pokazuje **TOP** wśród **💎💎💎**. Wynik (0–100) łączy: rozsądny dystans nad EMA200, bliskość **środka** Twojego zakresu RSI, aktywność wolumenu i płynność.
-
----
-
-## Jak używać (szybko)
-1. Ustaw **RSI** (np. 30–50), **MACD okno** (np. 3 dni), **wymagaj wolumenu**.  
-2. (Opcjonalnie) włącz **Close > EMA200** i **Max % nad EMA200** (np. 10–15%).  
-3. Kliknij **„Uruchom skaner”**.  
-4. Wybierz z **Rankingu** (guziki 1., 2., 3…) lub z listy „Wybierz spółkę…”.  
-5. Podejrzyj **tabelę**, **wykresy** i **Podsumowanie PRO**.
-
-**Tip:** na telefonie tabela przewija się **poziomo** (przeciągnij w bok).
-
----
-
-## Najczęstsze pytania
-**Czy diamenty to rekomendacja kupna?** Nie — to selekcja techniczna, nie porada.  
-**Dlaczego „–”, choć wykres wygląda ok?** Najczęściej RSI poza zakresem, brak świeżego MACD cross albo brak potwierdzenia wolumenem (jeśli wymagane).  
-**Co daje „Max % nad EMA200”?** Tnie zbyt „rozgrzane” wykresy (mniejsze ryzyko pościgu).
-
----
+## Jak używać
+- Ustaw **RSI** (np. 30–50), **MACD okno** (np. 3 dni), **Wymagaj wolumenu**.
+- (Opcjonalnie) **Close > EMA200** i **Max % nad EMA200** (np. 10–15%).
+- Uruchom skaner, wybierz z **Rankingu** albo z listy, a potem sprawdź **tabelę**, **wykresy** i **Podsumowanie**.
 
 ## Zastrzeżenie
-**RocketStock ma charakter wyłącznie edukacyjny i informacyjny.** Nie stanowi rekomendacji inwestycyjnej, porady inwestycyjnej, finansowej, podatkowej ani prawnej w rozumieniu obowiązujących przepisów. Przed podjęciem decyzji inwestycyjnych rozważ konsultację z licencjonowanym doradcą. **Inwestowanie wiąże się z ryzykiem utraty części lub całości kapitału.**
+- **RocketStock ma charakter wyłącznie edukacyjny i informacyjny.**
+- Nie stanowi rekomendacji inwestycyjnej ani porady finansowej, podatkowej czy prawnej.
+- Decyzje inwestycyjne podejmujesz samodzielnie i na własne ryzyko.
+- Rozważ konsultację z licencjonowanym doradcą. Inwestowanie wiąże się z ryzykiem utraty kapitału.
 """
 
-tab_scan, tab_guide = st.tabs(["🚀 Skaner", "📘 Przewodnik"])
+tab_scan, tab_guide = st.tabs(["Skaner", "Przewodnik"])
 
 with tab_scan:
     # =========================
@@ -886,14 +884,13 @@ with tab_scan:
         df_view["Wolumen"] = df_view["VolRatio"].apply(volume_label_from_ratio_simple)
         if only_three:
             df_view = df_view[df_view["Sygnał"] == "💎💎💎"]
-        # Filtr wolumenu (Wszystkie pomija)
         if 'vol_filter' in locals() and vol_filter != "Wszystkie":
             df_view = df_view[df_view["Wolumen"] == vol_filter]
 
-        # ===== RANKING (góra) =====
+        # ===== RANKING =====
         if enable_rank:
             rank_df = build_ranking(raw, rsi_min, rsi_max, top_n)
-            st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
+            st.markdown(f"### Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
             if rank_df.empty:
                 st.info("Brak kandydatów (💎💎💎). Zmień parametry.")
             else:
@@ -908,19 +905,19 @@ with tab_scan:
                             if st.button(label, key=f"rank_{rr['Ticker']}", use_container_width=True):
                                 st.session_state["selected_symbol"] = rr["Ticker"]
                                 st.session_state["selection_source"] = "rank"
-                                st.session_state["selectbox_symbol"] = "—"   # reset, żeby selectbox nie nadpisał
+                                st.session_state["selectbox_symbol"] = "—"   # reset selectboxa
 
         # ===== SELECTBOX (zawsze nad tabelą) =====
-        st.subheader("🔎 Wybierz spółkę do podsumowania")
+        st.subheader("Wybierz spółkę do podsumowania")
         tickers_list = df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist()
         sel = st.selectbox("Wpisz lub wybierz ticker", ["—"] + tickers_list, key="selectbox_symbol")
         if sel != "—":
             st.session_state["selected_symbol"] = sel
             st.session_state["selection_source"] = "selectbox"
 
-        # ===== TABELA — POD RANKINGIEM (HTML: lewy align + scroll h) =====
+        # ===== TABELA (lewy align + scroll h) =====
         st.markdown("---")
-        st.subheader("📋 Wyniki skanera (lista)")
+        st.subheader("Wyniki skanera (lista)")
         st.write(
             f"<span class='pill'>Wyników: <b>{len(df_view)}</b></span>"
             f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
@@ -945,11 +942,11 @@ with tab_scan:
         cols_tbl = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
         render_table_left(df_show, cols_tbl, max_h=target_h)
 
-        # ===== PODSUMOWANIE + WYKRESY (na końcu) =====
+        # ===== PODSUMOWANIE + WYKRESY =====
         sym = st.session_state.get("selected_symbol")
         if sym:
             st.markdown("---")
-            st.subheader(f"📈 {sym} — podgląd wykresów")
+            st.subheader(f"{sym} — podgląd wykresów")
 
             with st.spinner(f"Ładuję wykresy dla {sym}…"):
                 df_sel = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
@@ -973,16 +970,16 @@ with tab_scan:
                 st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
                 st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
 
-                st.markdown("### 🧭 Podsumowanie PRO")
+                st.markdown("### Podsumowanie")
                 try:
                     render_summary_pro(sym, raw, rsi_min, rsi_max)
                 except Exception as e:
-                    st.warning(f"Nie udało się zbudować Podsumowania PRO: {e}")
+                    st.warning(f"Nie udało się zbudować Podsumowania: {e}")
 
     else:
-        st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
+        st.info("Otwórz panel **Skaner** po lewej i kliknij **Uruchom skaner**.")
 
 with tab_guide:
     st.markdown(PRZEWODNIK_MD, unsafe_allow_html=True)
-    st.download_button("⬇️ Pobierz przewodnik (README.md)", PRZEWODNIK_MD, file_name="README.md")
+    st.download_button("Pobierz przewodnik (README.md)", PRZEWODNIK_MD, file_name="README.md")
     st.caption("© RocketStock — materiały edukacyjne. Brak rekomendacji inwestycyjnych.")
