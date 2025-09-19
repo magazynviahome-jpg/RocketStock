@@ -38,10 +38,17 @@ st.markdown(
       .stButton>button{ width:100%; }
     }
 
-    /* ===== Wyśrodkowanie ZAWARTOŚCI st.dataframe (komórki + nagłówki) ===== */
-    [data-testid="stDataFrame"] thead th div{ justify-content:center !important; text-align:center !important; }
-    [data-testid="stDataFrame"] td div[data-testid="stMarkdownContainer"]{ text-align:center !important; }
-    [data-testid="stDataFrame"] div[role="gridcell"]{ justify-content:center !important; }
+    /* ===== Wyrównanie zawartości st.dataframe do LEWEJ ===== */
+    [data-testid="stDataFrame"] thead th div{
+      justify-content:flex-start !important;
+      text-align:left !important;
+    }
+    [data-testid="stDataFrame"] td div[data-testid="stMarkdownContainer"]{
+      text-align:left !important;
+    }
+    [data-testid="stDataFrame"] div[role="gridcell"]{
+      justify-content:flex-start !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -736,7 +743,7 @@ if not raw.empty:
         st.session_state["selected_symbol"] = sel
         st.session_state["selection_source"] = "selectbox"
 
-    # ===== TABELA — POD RANKINGIEM (wyśrodkowana ZAWARTOŚĆ) =====
+    # ===== TABELA — POD RANKINGIEM (wyrównanie do LEWEJ via CSS) =====
     st.markdown("---")
     st.subheader("📋 Wyniki skanera (lista)")
     st.write(
