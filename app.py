@@ -37,68 +37,9 @@ st.markdown(
       .stPlotlyChart, .stMetric, .stButton{ margin-left:auto; margin-right:auto; width:100%; }
       .stButton>button{ width:100%; }
     }
-
-    /* Przycisk zwijania sidebara (floating) */
-    .sidebar-toggle{
-      position: fixed; right: 12px; bottom: 72px;
-      background: #fff; border:1px solid #e5e7eb; border-radius:10px;
-      padding: 8px 12px; font-weight:600; cursor:pointer;
-      box-shadow: 0 4px 16px rgba(0,0,0,.08);
-      z-index: 100050;  /* wyżej niż sidebar i stopka */
-    }
-    .sidebar-toggle:hover{ background:#f9fafb; }
-
     </style>
     """,
     unsafe_allow_html=True,
-)
-
-# ——— PRZYKLEJONA STOPKA PRAWNA (z podbitym z-index, żeby nie chowała się pod sidebarem) ———
-st.markdown(
-    """
-    <style>
-      .legal-footer{
-        position:fixed; left:0; right:0; bottom:0;
-        padding:8px 14px; background:rgba(0,0,0,.04);
-        border-top:1px solid rgba(0,0,0,.07);
-        font-size:12px; color:#6b7280; z-index:100000; /* > sidebar */
-        backdrop-filter:saturate(120%) blur(2px);
-      }
-      /* odsunięcie kontentu od dołu, by stopka nie nachodziła */
-      .block-container { padding-bottom: 56px; }
-      @media (max-width: 820px){
-        .legal-footer{ font-size:11px; padding:8px 10px; }
-        .block-container { padding-bottom: 64px; }
-      }
-    </style>
-    <div class="legal-footer">
-      <b>Uwaga:</b> RocketStock ma charakter wyłącznie edukacyjny i informacyjny.
-      Nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, finansowej, podatkowej czy prawnej
-      w rozumieniu obowiązujących przepisów. Decyzje inwestycyjne podejmujesz samodzielnie i na własne ryzyko.
-      Rozważ konsultację z licencjonowanym doradcą. Inwestowanie wiąże się z ryzykiem utraty części lub całości kapitału.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# ——— PRZYCISK ZWIJANIA/ROZWIJANIA SIDEBARA (klik w natywny toggle) ———
-st.markdown(
-    """
-    <button class="sidebar-toggle" id="rs-toggle">Zwiń / rozwiń panel</button>
-    <script>
-      // Spróbuj znaleźć kilka możliwych miejsc dla przycisku collapse
-      function clickSidebarToggle(){
-        const a = document.querySelector('[data-testid="stSidebarCollapseButton"] button');
-        const b = document.querySelector('[data-testid="stHeader"] button[title*="Hide sidebar"]');
-        const c = document.querySelector('button[kind="header"]'); // fallback dla starszych wersji
-        if(a){ a.click(); return; }
-        if(b){ b.click(); return; }
-        if(c){ c.click(); return; }
-      }
-      document.getElementById('rs-toggle')?.addEventListener('click', clickSidebarToggle);
-    </script>
-    """,
-    unsafe_allow_html=True
 )
 
 # =========================
@@ -800,7 +741,7 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# ZAKŁADKI: SKANER / PRZEWODNIK (bez emoji, klarownie)
+# ZAKŁADKI: SKANER / PRZEWODNIK
 # =========================
 PRZEWODNIK_MD = r"""
 # Przewodnik użytkownika – RocketStock
