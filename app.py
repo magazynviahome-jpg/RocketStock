@@ -257,12 +257,11 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     return fig
 
 # =========================
-# RENDER TABELI HTML (lewe wyrównanie, sticky header)
+# RENDER TABELI HTML (lewe wyrównanie + poziomy scroll na mobile)
 # =========================
 def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
     df_tbl = df[cols].copy()
 
-    # budujemy prostą tabelę HTML z lewym wyrównaniem
     thead = "<tr>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>"
     rows_html = []
     for _, r in df_tbl.iterrows():
@@ -271,14 +270,14 @@ def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
             v = r[c]
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 v = ""
-            tds.append(f"<td>{v}</td>")
+            tds.append(f"<td data-label='{c}'>{v}</td>")
         rows_html.append("<tr>" + "".join(tds) + "</tr>")
     tbody = "\n".join(rows_html)
 
     html = f"""
-    <div style="max-height:{max_h}px; overflow:auto; border:1px solid #eee; border-radius:8px;">
-      <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
-        <thead style="position:sticky; top:0; background:#fafafa; z-index:1;">
+    <div class="rs-table-wrap" style="max-height:{max_h}px; overflow:auto; border:1px solid #eee; border-radius:8px;">
+      <table class="rs-table">
+        <thead>
           {thead}
         </thead>
         <tbody>
@@ -287,18 +286,33 @@ def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
       </table>
     </div>
     <style>
-      table td, table th {{
-        text-align:left; padding:8px 10px; border-bottom:1px solid #f1f1f1;
-        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      .rs-table {{
+        width:100%; border-collapse:collapse; table-layout:auto;
+        min-width: 920px; /* na mobile pojawi się poziomy scroll zamiast ściskania */
       }}
-      table th {{ font-weight:600; color:#374151; }}
-      table tr:hover td {{ background:#fcfcff; }}
+      .rs-table th, .rs-table td {{
+        text-align:left; padding:10px 12px; border-bottom:1px solid #f1f1f1;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        font-size:14px;
+      }}
+      .rs-table thead th {{
+        position: sticky; top: 0; background:#fafafa; z-index:1;
+        font-weight:600; color:#374151;
+      }}
+      .rs-table tr:hover td {{ background:#fcfcff; }}
+      .rs-table-wrap {{ overflow:auto; }}
+
+      @media (max-width: 820px) {{
+        .rs-table th, .rs-table td {{ padding:10px 10px; font-size:13px; }}
+        /* Jeśli wolisz zawijanie tekstu zamiast scrolla, odkomentuj linię poniżej: */
+        /* .rs-table th, .rs-table td {{ white-space:normal; }} */
+      }}
     </style>
     """
     st.markdown(html, unsafe_allow_html=True)
 
 # =========================
-# SIDEBAR — USTAWIENIA + WYGLĄD
+# SIDEBAR — USTAWIENIA
 # =========================
 with st.sidebar:
     with st.expander("Skaner", expanded=True):
@@ -362,6 +376,7 @@ with st.sidebar:
 st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
 st.session_state.setdefault("selection_source", None)
+st.session_state.setdefault("selectbox_symbol", "—")   # <<< ważne dla konfliktu wyborów
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
 
@@ -762,16 +777,17 @@ if not raw.empty:
                         if st.button(label, key=f"rank_{rr['Ticker']}", use_container_width=True):
                             st.session_state["selected_symbol"] = rr["Ticker"]
                             st.session_state["selection_source"] = "rank"
+                            st.session_state["selectbox_symbol"] = "—"   # <<< reset, żeby selectbox nie nadpisał
 
     # ===== SELECTBOX (zawsze nad tabelą) =====
     st.subheader("🔎 Wybierz spółkę do podsumowania")
     tickers_list = df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist()
-    sel = st.selectbox("Wpisz lub wybierz ticker", ["—"] + tickers_list, index=0, key="selectbox_symbol")
+    sel = st.selectbox("Wpisz lub wybierz ticker", ["—"] + tickers_list, key="selectbox_symbol")
     if sel != "—":
         st.session_state["selected_symbol"] = sel
         st.session_state["selection_source"] = "selectbox"
 
-    # ===== TABELA — POD RANKINGIEM (HTML: lewy align) =====
+    # ===== TABELA — POD RANKINGIEM (HTML: lewy align + scroll h) =====
     st.markdown("---")
     st.subheader("📋 Wyniki skanera (lista)")
     st.write(
