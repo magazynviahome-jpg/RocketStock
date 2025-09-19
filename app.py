@@ -130,6 +130,36 @@ def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataF
         return None
 
 # =========================
+# POMOCNICZE: Market Cap i Short % Float
+# =========================
+@st.cache_data(show_spinner=False, ttl=60*30)
+def get_market_cap_fast(ticker: str) -> Optional[float]:
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        mc = fi.get("market_cap")
+        return float(mc) if mc is not None else None
+    except Exception:
+        return None
+
+@st.cache_data(show_spinner=False, ttl=60*60)
+def get_short_percent_float(ticker: str) -> Optional[float]:
+    """Zwraca shortPercentOfFloat (0–1) z Yahoo; mnożyć ×100 do %."""
+    try:
+        tk = yf.Ticker(ticker)
+        info = {}
+        try:
+            info = tk.get_info()
+        except Exception:
+            info = tk.info if hasattr(tk, "info") else {}
+        v = info.get("shortPercentOfFloat")
+        return float(v) if v is not None else None
+    except Exception:
+        return None
+
+def nz(x, default=None):
+    return default if (x is None or (isinstance(x, float) and pd.isna(x))) else x
+
+# =========================
 # SCORING DIAMENTÓW
 # =========================
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
@@ -203,8 +233,8 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD"], name="MACD", mode="lines"))
+    fig.add_trace(go.Scatter(x=d.index, y=df.tail(bars)["MACD_hist"], name="Histogram", opacity=0.3))
     fig.add_trace(go.Scatter(x=d.index, y=d["MACD_signal"], name="Signal", mode="lines"))
-    fig.add_trace(go.Bar(x=d.index, y=df.tail(bars)["MACD_hist"], name="Histogram", opacity=0.3))
     fig.add_hline(y=0, line_dash="dash")
     fig.update_layout(height=240, margin=dict(l=10, r=10, t=40, b=10),
                       title=f"{ticker} — MACD", showlegend=True)
@@ -222,12 +252,11 @@ with st.sidebar:
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
 
-        only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
-        require_price_above_ema200 = st.checkbox("Wymagaj Close > EMA200", value=True)
+        # Twardy prescan: Close > EMA200 oraz limit dystansu
+        require_price_above_ema200 = st.checkbox("Wymagaj Close > EMA200 (prescan)", value=True)
+        ema_dist_cap = st.slider("Max % nad EMA200 (prescan)", 0, 15, 15)
 
-        # NOWE: filtr Dystans do EMA200 — działa na widoku (po skanowaniu)
-        dist_min, dist_max = st.slider("Filtr: dystans do EMA200 (%)", -50, 100, (0, 100))
-        # Ustaw (0,100) => wszystko „powyżej EMA200”; np. (0,2) => max +2%
+        only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
 
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Bardzo wysoki", "Wysoki", "Normalny", "Niski", "Bardzo niski"], index=0)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
@@ -235,46 +264,6 @@ with st.sidebar:
         st.markdown("---")
         source = st.selectbox("Źródło listy NASDAQ", ["Auto (online, fallback do CSV)", "Tylko CSV w repo"], index=0)
         period = st.selectbox("Okres danych", ["6mo", "1y", "2y"], index=1)
-
-    with st.expander("Dodatkowe filtry (opcjonalne)", expanded=False):
-        # Wszystko domyślnie OFF — jak chciałeś
-        f_maxdist_on = st.checkbox("Max dystans do EMA200 (pre-scan)", value=False)
-        f_maxdist_pct = st.slider("— Maks. % nad EMA200", 5, 30, 15) if f_maxdist_on else 15
-        f_slope_on = st.checkbox("EMA200 rośnie (nachylenie > 0)", value=False)
-        f_align_on = st.checkbox("Zgranie średnich: Close > EMA50 > EMA200", value=False)
-        f_macd_fresh_on = st.checkbox("MACD świeży: cross w N dniach + histogram rośnie", value=False)
-        f_macd_fresh_look = 3
-        f_macd_hist_up_days = 1
-        f_rsi_up_on = st.checkbox("RSI dziś ≥ RSI wczoraj", value=False)
-
-        st.markdown("---")
-        f_minavg_on = st.checkbox("Min. średni wolumen (AvgVolume)", value=False)
-        f_minavg_val = st.number_input("— Min AvgVolume", 0, 50_000_000, 1_000_000, step=100_000)
-        f_vr_on = st.checkbox("Widełki VolRatio", value=False)
-        colV1, colV2 = st.columns(2)
-        with colV1:
-            f_vr_min = st.number_input("— VR min", 0.0, 10.0, 1.2, step=0.1, format="%.1f")
-        with colV2:
-            f_vr_max = st.number_input("— VR max (cap)", 0.5, 10.0, 3.0, step=0.1, format="%.1f")
-
-        st.markdown("---")
-        f_mcap_on = st.checkbox("Filtr kapitalizacji (USD)", value=False)
-        colM1, colM2 = st.columns(2)
-        with colM1:
-            f_mcap_min = st.number_input("— MC min (USD)", 0.0, 5_000_000_000_000.0, 300_000_000.0, step=50_000_000.0, format="%.0f")
-        with colM2:
-            f_mcap_max = st.number_input("— MC max (USD)", 0.0, 5_000_000_000_000.0, 2_000_000_000_000.0, step=50_000_000.0, format="%.0f")
-
-        st.markdown("---")
-        f_gap_on = st.checkbox("Max GAP UP %", value=False)
-        f_gap_max = st.number_input("— GAP UP ≤ %", 0.0, 30.0, 8.0, step=0.5, format="%.1f")
-        f_minprice_on = st.checkbox("Min cena ($)", value=False)
-        f_minprice_val = st.number_input("— Cena ≥ $", 0.0, 2000.0, 5.0, step=0.5, format="%.1f")
-        f_atr_on = st.checkbox("Max ATR% (ATR14/Close)", value=False)
-        f_atr_max = st.number_input("— ATR% ≤", 0.0, 30.0, 8.0, step=0.5, format="%.1f")
-        f_hhhl_on = st.checkbox("Struktura: HH & HL (ostatnie 3 świece)", value=False)
-        f_resist_on = st.checkbox("Bliskość oporu: min 3% do 3-mies. high", value=False)
-        f_resist_min = st.number_input("— Min odległość do 3m high (%)", 0.0, 20.0, 3.0, step=0.5, format="%.1f")
 
     with st.expander("Ranking, Tabela i Mobil", expanded=True):
         enable_rank = st.checkbox("Ranking (bez AI)", value=True)
@@ -294,19 +283,33 @@ st.session_state.setdefault("selection_source", None)          # "rank" | "table
 st.session_state.setdefault("last_table_selected", None)
 
 # =========================
-# FUNDAMENTY + SHORT (yfinance)
+# PRO podsumowanie (jak wcześniej)
 # =========================
-@st.cache_data(show_spinner=False, ttl=60*30)
-def get_market_cap_fast(ticker: str) -> Optional[float]:
+def _fmt_money(x, cur="USD"):
     try:
-        fi = yf.Ticker(ticker).fast_info
-        mc = fi.get("market_cap")
-        return float(mc) if mc is not None else None
+        if x is None or (isinstance(x, float) and math.isnan(x)): return "N/A"
+        absx = abs(float(x))
+        if absx >= 1e12: s = f"{x/1e12:.2f}T"
+        elif absx >= 1e9: s = f"{x/1e9:.2f}B"
+        elif absx >= 1e6: s = f"{x/1e6:.2f}M"
+        elif absx >= 1e3: s = f"{x/1e3:.2f}K"
+        else: s = f"{x:.2f}"
+        return f"{s} {cur}"
+    except Exception:
+        return "N/A"
+
+def _fmt_pct(x):
+    try:
+        return f"{float(x)*100:.1f}%" if abs(float(x))<2 else f"{float(x):.1f}%"
+    except Exception:
+        return "N/A"
+
+def _pct_from(a, b) -> Optional[float]:
+    try:
+        if a is None or b in (None, 0): return None
+        return (float(a)/float(b)-1.0)*100.0
     except Exception:
         return None
-
-def nz(x, default=None):
-    return default if (x is None or (isinstance(x, float) and pd.isna(x))) else x
 
 @st.cache_data(show_spinner=False, ttl=60*15)
 def fetch_fundamentals(ticker: str) -> dict:
@@ -414,220 +417,6 @@ def fetch_fundamentals(ticker: str) -> dict:
         pass
     return data
 
-def _fmt_money(x, cur="USD"):
-    try:
-        if x is None or (isinstance(x, float) and math.isnan(x)): return "N/A"
-        absx = abs(float(x))
-        if absx >= 1e12: s = f"{x/1e12:.2f}T"
-        elif absx >= 1e9: s = f"{x/1e9:.2f}B"
-        elif absx >= 1e6: s = f"{x/1e6:.2f}M"
-        elif absx >= 1e3: s = f"{x/1e3:.2f}K"
-        else: s = f"{x:.2f}"
-        return f"{s} {cur}"
-    except Exception:
-        return "N/A"
-
-def _fmt_pct(x):
-    try:
-        return f"{float(x)*100:.1f}%" if abs(float(x))<2 else f"{float(x):.1f}%"
-    except Exception:
-        return "N/A"
-
-def _pct_from(a, b) -> Optional[float]:
-    try:
-        if a is None or b in (None, 0): return None
-        return (float(a)/float(b)-1.0)*100.0
-    except Exception:
-        return None
-
-# =========================
-# SKAN
-# =========================
-if run_scan:
-    prev_symbol = st.session_state.get("selected_symbol")
-    prev_source = st.session_state.get("selection_source")
-
-    tickers_df = get_tickers(source)
-    if tickers_df is None or tickers_df.empty:
-        st.error("Brak tickerów do skanowania.")
-    else:
-        tickers_list = tickers_df["Ticker"].tolist()[:scan_limit]
-        progress = st.progress(0); status = st.empty(); results = []
-        for i, t in enumerate(tickers_list, start=1):
-            status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
-
-            if locals().get("f_mcap_on"):
-                mc = get_market_cap_fast(t)
-                if mc is None or not (f_mcap_min <= mc <= f_mcap_max):
-                    progress.progress(i/len(tickers_list)); continue
-            else:
-                mc = None
-
-            df = get_stock_df(t, period=period, vol_window=vol_window)
-            if df is not None and not df.empty:
-                last = df.iloc[-1]
-
-                rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
-                price_ok = True
-                if require_price_above_ema200:
-                    price_ok = pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and (float(last.get("Close")) > float(last.get("EMA200")))
-
-                if not (rsi_ok and price_ok):
-                    di = "–"; macd_cross = False; vol_ok = False
-                else:
-                    vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
-                    macd_cross = macd_bullish_cross_recent(df, macd_lookback)
-                    di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                                        macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
-
-                # opcjonalne pre-scan filtry
-                gap_ok = True
-                if locals().get("f_gap_on") and pd.notna(last.get("GapUpPct")):
-                    gap_ok = (float(last.get("GapUpPct")) <= f_gap_max)
-
-                maxdist_ok = True
-                if locals().get("f_maxdist_on") and pd.notna(last.get("DistEMA200Pct")):
-                    maxdist_ok = (float(last.get("DistEMA200Pct")) <= f_maxdist_pct)
-
-                slope_ok = True
-                if locals().get("f_slope_on") and pd.notna(last.get("EMA200_Slope5")):
-                    slope_ok = (float(last.get("EMA200_Slope5")) > 0)
-
-                align_ok = True
-                if locals().get("f_align_on") and pd.notna(last.get("EMA50")) and pd.notna(last.get("EMA200")) and pd.notna(last.get("Close")):
-                    align_ok = (float(last.get("Close")) > float(last.get("EMA50")) > float(last.get("EMA200")))
-
-                macd_fresh_ok = True
-                if locals().get("f_macd_fresh_on"):
-                    hist = df["MACD_hist"].tail(int(f_macd_hist_up_days)+1).dropna()
-                    hist_up = (hist.diff() > 0).tail(int(f_macd_hist_up_days)).all() if len(hist) >= (f_macd_hist_up_days+1) else False
-                    macd_recent = macd_bullish_cross_recent(df, int(f_macd_fresh_look))
-                    macd_fresh_ok = macd_recent and hist_up
-
-                rsi_up_ok = True
-                if locals().get("f_rsi_up_on") and pd.notna(last.get("RSI")) and len(df) >= 2 and pd.notna(df["RSI"].iloc[-2]):
-                    rsi_up_ok = bool(last.get("RSI") >= df["RSI"].iloc[-2])
-
-                minavg_ok = True
-                if locals().get("f_minavg_on") and pd.notna(last.get("AvgVolume")):
-                    minavg_ok = (float(last.get("AvgVolume")) >= float(f_minavg_val))
-
-                vr_ok = True
-                vr_val = None
-                if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume")) > 0:
-                    vr_val = float(last.get("Volume")) / float(last.get("AvgVolume"))
-                if locals().get("f_vr_on") and vr_val is not None:
-                    vr_ok = (vr_val >= float(f_vr_min)) and (vr_val <= float(f_vr_max))
-
-                minprice_ok = True
-                if locals().get("f_minprice_on") and pd.notna(last.get("Close")):
-                    minprice_ok = (float(last.get("Close")) >= float(f_minprice_val))
-
-                atr_ok = True
-                if locals().get("f_atr_on") and pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close"))>0:
-                    atr_pct = float(last.get("ATR")) / float(last.get("Close")) * 100.0
-                    atr_ok = (atr_pct <= float(f_atr_max))
-
-                hhhl_ok = True
-                if locals().get("f_hhhl_on") and len(df) >= 3 and pd.notna(df["HH3"].iloc[-1]) and pd.notna(df["HL3"].iloc[-1]):
-                    hhhl_ok = bool(df["HH3"].iloc[-1] and df["HL3"].iloc[-1])
-
-                resist_ok = True
-                if locals().get("f_resist_on") and pd.notna(last.get("RoomToHighPct")):
-                    resist_ok = (float(last.get("RoomToHighPct")) >= float(f_resist_min))
-
-                mcap_ok = True if not locals().get("f_mcap_on") else (mc is not None and (f_mcap_min <= mc <= f_mcap_max))
-
-                passed_all_filters = all([
-                    gap_ok, maxdist_ok, slope_ok, align_ok, macd_fresh_ok, rsi_up_ok,
-                    minavg_ok, vr_ok, minprice_ok, atr_ok, hhhl_ok, resist_ok, mcap_ok
-                ])
-
-                results.append({
-                    "Ticker": t,
-                    "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
-                    "RSI": round(float(last.get("RSI")), 2) if pd.notna(last.get("RSI")) else None,
-                    "EMA50": round(float(last.get("EMA50")), 2) if pd.notna(last.get("EMA50")) else None,
-                    "EMA200": round(float(last.get("EMA200")), 2) if pd.notna(last.get("EMA200")) else None,
-                    "MACD": round(float(last.get("MACD")), 4) if pd.notna(last.get("MACD")) else None,
-                    "MACD_signal": round(float(last.get("MACD_signal")), 4) if pd.notna(last.get("MACD_signal")) else None,
-                    "MACD_hist": round(float(last.get("MACD_hist")), 4) if pd.notna(last.get("MACD_hist")) else None,
-                    "Volume": int(last.get("Volume")) if pd.notna(last.get("Volume")) else None,
-                    "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
-                    "VolRatio": vr_val,
-                    "GapUpPct": round(float(last.get("GapUpPct")), 2) if pd.notna(last.get("GapUpPct")) else None,
-                    "DistEMA200Pct": round(float(last.get("DistEMA200Pct")), 2) if pd.notna(last.get("DistEMA200Pct")) else None,
-                    "ATR": round(float(last.get("ATR")), 4) if pd.notna(last.get("ATR")) else None,
-                    "RoomToHighPct": round(float(last.get("RoomToHighPct")), 2) if pd.notna(last.get("RoomToHighPct")) else None,
-                    "MarketCap": float(mc) if mc is not None else None,
-                    "FiltersOK": passed_all_filters,
-                    "Sygnał": di
-                })
-            progress.progress(i/len(tickers_list))
-        status.write("✅ Zakończono skan.")
-        st.session_state.scan_results = pd.DataFrame(results)
-
-        # reset/selekcja po skanie: jeśli poprzedni wybór nie istnieje -> wyczyść
-        if prev_symbol and prev_symbol in set(st.session_state.scan_results["Ticker"]):
-            st.session_state["selected_symbol"] = prev_symbol
-            st.session_state["selection_source"] = prev_source
-        else:
-            st.session_state["selected_symbol"] = None
-            st.session_state["selection_source"] = None
-            st.session_state["last_table_selected"] = None
-
-# =========================
-# RANKING (bez AI)
-# =========================
-def _safe(val, default=None):
-    return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
-
-def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
-    close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
-    rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
-    volr = _safe(row.get("VolRatio")); avgv = _safe(row.get("AvgVolume"))
-    dist_score = 0.0
-    if close and ema200 and ema200>0:
-        dist = close/ema200 - 1.0
-        dist_score = max(0.0, min(dist, 0.10)) / 0.10
-    rsi_score = 0.0
-    if rsi is not None:
-        mid = (rsi_min + rsi_max)/2.0
-        half_range = max(1.0, (rsi_max - rsi_min)/2.0)
-        rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
-    macd_score = 0.0
-    if macd is not None and macd_sig is not None:
-        diff = macd - macd_sig
-        macd_score = max(0.0, min(diff, 0.50))/0.50
-    volr_score = 0.0
-    if volr is not None:
-        volr_score = max(0.0, min(volr, 2.0))/2.0
-    liq_score = 0.0
-    if isinstance(avgv,(int,float)) and avgv:
-        if avgv >= 5_000_000: liq_score = 1.0
-        elif avgv >= 2_000_000: liq_score = 0.7
-        elif avgv >= 1_000_000: liq_score = 0.5
-        elif avgv > 0: liq_score = 0.2
-    return round((0.30*dist_score + 0.25*rsi_score + 0.25*macd_score + 0.15*volr_score + 0.05*liq_score)*100.0, 1)
-
-def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> pd.DataFrame:
-    if df is None or df.empty: return pd.DataFrame(columns=["Ticker","Score"])
-    base = df.copy()
-    base = base[(base["Sygnał"]=="💎💎💎") & (base["FiltersOK"]==True)]
-    if base.empty: return pd.DataFrame(columns=["Ticker","Score"])
-    base["Score"] = base.apply(lambda r: rank_score_row(r, rsi_min, rsi_max), axis=1)
-    def rsi_dev(r):
-        rv = _safe(r.get("RSI"))
-        if rv is None: return 999.0
-        mid = (rsi_min+rsi_max)/2.0
-        return abs(rv-mid)
-    base["_dev"] = base.apply(rsi_dev, axis=1)
-    base = base.sort_values(["Score","AvgVolume","_dev","Ticker"], ascending=[False, False, True, True]).drop(columns=["_dev"])
-    return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
-
-# =========================
-# PRO podsumowanie
-# =========================
 def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[float]]:
     if df_full is None or df_full.empty: return (None, None)
     last = df_full.iloc[-1]
@@ -758,12 +547,140 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         for r in risks: st.write("- " + r)
 
 # =========================
+# SKAN
+# =========================
+if run_scan:
+    prev_symbol = st.session_state.get("selected_symbol")
+    prev_source = st.session_state.get("selection_source")
+
+    tickers_df = get_tickers(source)
+    if tickers_df is None or tickers_df.empty:
+        st.error("Brak tickerów do skanowania.")
+    else:
+        tickers_list = tickers_df["Ticker"].tolist()[:scan_limit]
+        progress = st.progress(0); status = st.empty(); results = []
+        for i, t in enumerate(tickers_list, start=1):
+            status.write(f"⏳ {i}/{len(tickers_list)} – {t}")
+            df = get_stock_df(t, period=period, vol_window=vol_window)
+            if df is not None and not df.empty:
+                last = df.iloc[-1]
+
+                # Twarde warunki skanera:
+                # 1) RSI w przedziale
+                rsi_ok = pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)
+                # 2) Close > EMA200 i cap dystansu (jeśli wymagane)
+                price_ok = True
+                if require_price_above_ema200:
+                    if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200"))>0:
+                        dist_pct = (float(last.get("Close"))/float(last.get("EMA200"))-1.0)*100.0
+                        price_ok = (dist_pct >= 0.0) and (dist_pct <= float(ema_dist_cap))
+                    else:
+                        price_ok = False
+
+                if not (rsi_ok and price_ok):
+                    di = "–"; macd_cross = False; vol_ok = False
+                    vr_val = None
+                else:
+                    vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
+                    macd_cross = macd_bullish_cross_recent(df, macd_lookback)
+                    di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                                        macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
+                    vr_val = None
+                    if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume"))>0:
+                        vr_val = float(last.get("Volume"))/float(last.get("AvgVolume"))
+
+                # Pobierz MarketCap i Short % float (do tabeli)
+                mc = get_market_cap_fast(t)
+                spf = get_short_percent_float(t)  # 0–1
+
+                results.append({
+                    "Ticker": t,
+                    "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
+                    "RSI": round(float(last.get("RSI")), 2) if pd.notna(last.get("RSI")) else None,
+                    "EMA50": round(float(last.get("EMA50")), 2) if pd.notna(last.get("EMA50")) else None,
+                    "EMA200": round(float(last.get("EMA200")), 2) if pd.notna(last.get("EMA200")) else None,
+                    "MACD": round(float(last.get("MACD")), 4) if pd.notna(last.get("MACD")) else None,
+                    "MACD_signal": round(float(last.get("MACD_signal")), 4) if pd.notna(last.get("MACD_signal")) else None,
+                    "MACD_hist": round(float(last.get("MACD_hist")), 4) if pd.notna(last.get("MACD_hist")) else None,
+                    "Volume": int(last.get("Volume")) if pd.notna(last.get("Volume")) else None,
+                    "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
+                    "VolRatio": vr_val,
+                    "DistEMA200Pct": round((float(last.get("Close"))/float(last.get("EMA200"))-1.0)*100.0, 2) if (pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200"))>0) else None,
+                    "ATR": round(float(last.get("ATR")), 4) if pd.notna(last.get("ATR")) else None,
+                    "MarketCap": float(mc) if mc is not None else None,
+                    "ShortPctFloat": (float(spf)*100.0 if spf is not None else None),
+                    "FiltersOK": True,  # wszystkie pre-wymogi już wymuszone
+                    "Sygnał": di
+                })
+            progress.progress(i/len(tickers_list))
+        status.write("✅ Zakończono skan.")
+        st.session_state.scan_results = pd.DataFrame(results)
+
+        # reset selekcji po skanie: jeśli poprzedni wybór zniknął -> wyczyść
+        if prev_symbol and prev_symbol in set(st.session_state.scan_results["Ticker"]):
+            st.session_state["selected_symbol"] = prev_symbol
+            st.session_state["selection_source"] = prev_source
+        else:
+            st.session_state["selected_symbol"] = None
+            st.session_state["selection_source"] = None
+            st.session_state["last_table_selected"] = None
+
+# =========================
+# RANKING (bez AI — jak wcześniej)
+# =========================
+def _safe(val, default=None):
+    return default if val is None or (isinstance(val, float) and math.isnan(val)) else val
+
+def rank_score_row(row, rsi_min: int, rsi_max: int) -> float:
+    close = _safe(row.get("Close")); ema200 = _safe(row.get("EMA200"))
+    rsi = _safe(row.get("RSI")); macd = _safe(row.get("MACD")); macd_sig = _safe(row.get("MACD_signal"))
+    volr = _safe(row.get("VolRatio")); avgv = _safe(row.get("AvgVolume"))
+    dist_score = 0.0
+    if close and ema200 and ema200>0:
+        dist = close/ema200 - 1.0
+        dist_score = max(0.0, min(dist, 0.10)) / 0.10
+    rsi_score = 0.0
+    if rsi is not None:
+        mid = (rsi_min + rsi_max)/2.0
+        half_range = max(1.0, (rsi_max - rsi_min)/2.0)
+        rsi_score = 1.0 - min(abs(rsi-mid)/half_range, 1.0)
+    macd_score = 0.0
+    if macd is not None and macd_sig is not None:
+        diff = macd - macd_sig
+        macd_score = max(0.0, min(diff, 0.50))/0.50
+    volr_score = 0.0
+    if volr is not None:
+        volr_score = max(0.0, min(volr, 2.0))/2.0
+    liq_score = 0.0
+    if isinstance(avgv,(int,float)) and avgv:
+        if avgv >= 5_000_000: liq_score = 1.0
+        elif avgv >= 2_000_000: liq_score = 0.7
+        elif avgv >= 1_000_000: liq_score = 0.5
+        elif avgv > 0: liq_score = 0.2
+    return round((0.30*dist_score + 0.25*rsi_score + 0.25*macd_score + 0.15*volr_score + 0.05*liq_score)*100.0, 1)
+
+def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame(columns=["Ticker","Score"])
+    base = df.copy()
+    base = base[(base["Sygnał"]=="💎💎💎") & (base["FiltersOK"]==True)]
+    if base.empty: return pd.DataFrame(columns=["Ticker","Score"])
+    base["Score"] = base.apply(lambda r: rank_score_row(r, rsi_min, rsi_max), axis=1)
+    def rsi_dev(r):
+        rv = _safe(r.get("RSI"))
+        if rv is None: return 999.0
+        mid = (rsi_min+rsi_max)/2.0
+        return abs(rv-mid)
+    base["_dev"] = base.apply(rsi_dev, axis=1)
+    base = base.sort_values(["Score","AvgVolume","_dev","Ticker"], ascending=[False, False, True, True]).drop(columns=["_dev"])
+    return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
+
+# =========================
 # WIDOK + TABELA / LISTA + RANKING + WYKRESY
 # =========================
 if "scan_results" in st.session_state and not st.session_state.scan_results.empty:
     df_res = st.session_state.scan_results.copy()
 
-    # 1) Klasy wolumenu
+    # Klasy wolumenu do widoku (etykieta)
     ratio_series = pd.to_numeric(df_res["VolRatio"], errors="coerce")
     if ratio_series.notna().sum() >= 5:
         qtiles = ratio_series.rank(pct=True)
@@ -781,26 +698,21 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             return "Bardzo niski"
         df_res["Wolumen"] = df_res.apply(_fallback, axis=1)
 
-    # 2) Filtry widoku — KOLEJNOŚĆ MA ZNACZENIE
-    # a) wolumen
-    if locals().get("vol_filter") != "Wszystkie":
+    # Filtry widoku
+    if vol_filter != "Wszystkie":
         df_res = df_res[df_res["Wolumen"] == vol_filter]
-    # b) tylko 💎💎💎
-    if locals().get("only_three"):
+    if only_three:
         df_res = df_res[df_res["Sygnał"] == "💎💎💎"]
-    # c) nowy filtr dystansu do EMA200
-    df_res = df_res[pd.notna(df_res["DistEMA200Pct"])]
-    df_res = df_res[(df_res["DistEMA200Pct"] >= dist_min) & (df_res["DistEMA200Pct"] <= dist_max)]
 
     # ===== RANKING =====
-    if locals().get("enable_rank"):
-        rank_df = build_ranking(st.session_state.scan_results, rsi_min, rsi_max, locals().get("top_n", 10))
+    if enable_rank:
+        rank_df = build_ranking(st.session_state.scan_results, rsi_min, rsi_max, top_n)
         st.session_state.rank_df = rank_df
-        st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else locals().get('top_n',10)})")
+        st.markdown(f"### 🔝 Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
         if rank_df.empty:
             st.info("Brak kandydatów (💎💎💎 + filtry). Zmień parametry.")
         else:
-            per_row = 6 if "Kompakt" in locals().get("rank_layout","") else (4 if "Średni" in rank_layout else 3)
+            per_row = 6 if "Kompakt" in rank_layout else (4 if "Średni" in rank_layout else 3)
             for start in range(0, len(rank_df), per_row):
                 row_slice = rank_df.iloc[start:start+per_row]
                 cols = st.columns(len(row_slice))
@@ -813,7 +725,7 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
 
     # ===== TABELA / LISTA =====
     st.subheader("📋 Wyniki skanera")
-    # porządek i sort do widoku
+    # sortowanie / porządek
     def _rank(di: str) -> int: return 2 if di == "💎💎💎" else (1 if di == "💎💎" else 0)
     if not df_res.empty:
         df_res["Rank"] = df_res["Sygnał"].apply(_rank)
@@ -823,30 +735,38 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
         f"<span class='pill'>Wyników: <b>{len(df_res)}</b></span>"
         f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
         f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
-        f"<span class='pill'>Okres: <b>{locals().get('period','1y')}</b></span>"
-        f"<span class='pill'>Close>EMA200: <b>{'ON' if locals().get('require_price_above_ema200') else 'OFF'}</b></span>"
-        f"<span class='pill'>Dystans EMA200: <b>{dist_min}–{dist_max}%</b></span>",
+        f"<span class='pill'>Okres: <b>{period}</b></span>"
+        f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>",
         unsafe_allow_html=True
     )
 
-    if locals().get("mobile_mode"):
-        # >>> TRYB MOBILNY: zwykła lista z wyborem
+    if mobile_mode:
+        # >>> TRYB MOBILNY: lista + wybór działa na dotyk
         tickers_list = df_res["Ticker"].tolist()
-        selected_from_mobile = st.selectbox("Wybierz spółkę", ["—"] + tickers_list, index=0)
+        selected_from_mobile = st.selectbox("Wybierz spółkę", ["—"] + tickers_list, index=0, key=f"mobile_select_{len(tickers_list)}")
         if selected_from_mobile != "—":
             st.session_state["selected_symbol"] = selected_from_mobile
             st.session_state["selection_source"] = "mobile"
+        else:
+            # jeśli zmieniłeś filtr i wybrałeś „—”, to czyścimy wybór
+            if st.session_state.get("selection_source") == "mobile":
+                st.session_state["selected_symbol"] = None
+                st.session_state["selection_source"] = None
+
         # mały podgląd tabeli
-        st.dataframe(df_res[["Ticker","Sygnał","Close","RSI","EMA200","DistEMA200Pct","VolRatio","Wolumen"]], use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_res[["Ticker","Sygnał","Close","RSI","EMA200","DistEMA200Pct","VolRatio","MarketCap","ShortPctFloat"]],
+            use_container_width=True, hide_index=True
+        )
     else:
-        # >>> DESKTOP: AG Grid (stabilne key + model_changed)
-        view_cols = ["Ticker", "Sygnał", "Close", "RSI", "EMA200", "Wolumen", "DistEMA200Pct", "VolRatio", "MarketCap"]
+        # >>> DESKTOP: AG Grid (nowe kolumny + sort)
+        view_cols = ["Ticker","Sygnał","Close","RSI","EMA200","DistEMA200Pct","VolRatio","Wolumen","MarketCap","ShortPctFloat"]
         tick_tuple = tuple(df_res["Ticker"].tolist()) if not df_res.empty else ()
-        grid_key = f"grid_{locals().get('only_three',False)}_{locals().get('vol_filter','all')}_{dist_min}_{dist_max}_{len(df_res)}_{abs(hash(tick_tuple))%10000}"
+        grid_key = f"grid_{only_three}_{vol_filter}_{len(df_res)}_{abs(hash(tick_tuple))%10000}"
 
         gb = GridOptionsBuilder.from_dataframe(df_res[view_cols] if not df_res.empty else pd.DataFrame(columns=view_cols))
         gb.configure_selection('single', use_checkbox=False)
-        gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')
+        gb.configure_grid_options(rowHeight=36, suppressPaginationPanel=True, domLayout='normal')  # sort on by default
         grid_options = gb.build()
 
         grid_response = AgGrid(
@@ -854,12 +774,12 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             gridOptions=grid_options,
             update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.MODEL_CHANGED,
             theme='alpine',
-            height=locals().get("table_height",560),
-            fit_columns_on_grid_load=bool(locals().get("fit_cols", True)),
+            height=table_height,
+            fit_columns_on_grid_load=bool(fit_cols),
             key=grid_key,
         )
 
-        # jeśli wybrany ticker zniknął po filtrach i wybór był z tabeli -> wyczyść
+        # widoczne tickery po filtrach
         visible_tickers = set(df_res["Ticker"]) if not df_res.empty else set()
         if st.session_state.get("selected_symbol") and st.session_state["selected_symbol"] not in visible_tickers and st.session_state.get("selection_source") == "table":
             st.session_state["selected_symbol"] = None
@@ -900,10 +820,10 @@ if "scan_results" in st.session_state and not st.session_state.scan_results.empt
             m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
             distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
             m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
-            macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
-            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), locals().get("use_volume",True))
+            macd_cross_here = macd_bullish_cross_recent(df_sel, macd_lookback)
+            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
             di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                                     macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
+                                     macd_cross_here, vol_ok_here, signal_mode, rsi_min, rsi_max)
             m4.metric("Sygnał", di_here)
 
             st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
