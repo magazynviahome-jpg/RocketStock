@@ -676,7 +676,7 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
     return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
 
 # =========================
-# WIDOK: RANKING → SELECTBOX → PODSUMOWANIE → TABELA NA KOŃCU
+# WIDOK: RANKING → SELECTBOX → TABELA → PODSUMOWANIE + WYKRESY
 # =========================
 raw = st.session_state.get("scan_results_raw", pd.DataFrame())
 if not raw.empty:
@@ -709,7 +709,7 @@ if not raw.empty:
                             st.session_state["selected_symbol"] = rr["Ticker"]
                             st.session_state["selection_source"] = "rank"
 
-    # ===== SELECTBOX z wyszukiwaniem (środek) =====
+    # ===== SELECTBOX (zawsze nad tabelą) =====
     st.subheader("🔎 Wybierz spółkę do podsumowania")
     tickers_list = df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist()
     sel = st.selectbox("Wpisz lub wybierz ticker", ["—"] + tickers_list, index=0, key="selectbox_symbol")
@@ -717,42 +717,7 @@ if not raw.empty:
         st.session_state["selected_symbol"] = sel
         st.session_state["selection_source"] = "selectbox"
 
-    # ===== PODSUMOWANIE + WYKRESY =====
-    sym = st.session_state.get("selected_symbol")
-    if sym:
-        st.markdown("---")
-        st.subheader(f"📈 {sym} — podgląd wykresów")
-
-        with st.spinner(f"Ładuję wykresy dla {sym}…"):
-            df_sel = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
-
-        if df_sel is None or df_sel.empty:
-            st.error("Nie udało się pobrać danych wykresu.")
-        else:
-            last = df_sel.iloc[-1]
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
-            m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
-            distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
-            m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
-            macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
-            # >>> FIX TU: poprawione wywołanie get("AvgVolume")
-            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), locals().get("use_volume",True))
-            di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                                     macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
-            m4.metric("Sygnał", di_here)
-
-            st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
-            st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
-            st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
-
-            st.markdown("### 🧭 Podsumowanie PRO")
-            try:
-                render_summary_pro(sym, raw, rsi_min, rsi_max)
-            except Exception as e:
-                st.warning(f"Nie udało się zbudować Podsumowania PRO: {e}")
-
-    # ===== TABELA — NA KOŃCU WIDOKU =====
+    # ===== TABELA — POD RANKINGIEM =====
     st.markdown("---")
     st.subheader("📋 Wyniki skanera (lista)")
     st.write(
@@ -785,6 +750,41 @@ if not raw.empty:
         hide_index=True,
         height=target_h
     )
+
+    # ===== PODSUMOWANIE + WYKRESY (na końcu) =====
+    sym = st.session_state.get("selected_symbol")
+    if sym:
+        st.markdown("---")
+        st.subheader(f"📈 {sym} — podgląd wykresów")
+
+        with st.spinner(f"Ładuję wykresy dla {sym}…"):
+            df_sel = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
+
+        if df_sel is None or df_sel.empty:
+            st.error("Nie udało się pobrać danych wykresu.")
+        else:
+            last = df_sel.iloc[-1]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
+            m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
+            distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
+            m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
+            macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
+            # poprawne: używamy last.get("AvgVolume") zamiast last["AvgVolume"]
+            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), locals().get("use_volume",True))
+            di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                                     macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
+            m4.metric("Sygnał", di_here)
+
+            st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
+            st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
+            st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
+
+            st.markdown("### 🧭 Podsumowanie PRO")
+            try:
+                render_summary_pro(sym, raw, rsi_min, rsi_max)
+            except Exception as e:
+                st.warning(f"Nie udało się zbudować Podsumowania PRO: {e}")
 
 else:
     st.info("Otwórz panel **Skaner** po lewej i kliknij **🚀 Uruchom skaner**.")
