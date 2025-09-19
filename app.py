@@ -736,7 +736,8 @@ if not raw.empty:
             distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
             m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
             macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
-            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"], locals().get("use_volume",True))
+            # >>> FIX TU: poprawione wywołanie get("AvgVolume")
+            vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), locals().get("use_volume",True))
             di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                      macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
             m4.metric("Sygnał", di_here)
@@ -763,7 +764,6 @@ if not raw.empty:
         unsafe_allow_html=True
     )
 
-    # przygotuj kolumny i formaty (2 miejsca) — BEZ „Podgląd”
     df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","VolRatio","MarketCap","ShortPctFloat"]].copy()
     df_show.rename(columns={
         "ShortPctFloat": "Short%",
@@ -774,7 +774,6 @@ if not raw.empty:
         if c in df_show.columns:
             df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
 
-    # wysokość z przewijaniem (dyn. ale rozsądne limity)
     rows = len(df_show)
     row_h = 35
     header_h = 46
