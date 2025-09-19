@@ -155,6 +155,10 @@ def get_market_cap_fast(ticker: str) -> Optional[float]:
 
 @st.cache_data(show_spinner=False, ttl=60*60)
 def get_short_percent_float(ticker: str) -> Optional[float]:
+    """
+    Zwraca short float jako ułamek 0–1.
+    Fallback: jeśli brak shortPercentOfFloat, liczymy sharesShort / floatShares (lub sharesFloat).
+    """
     try:
         tk = yf.Ticker(ticker)
         try:
@@ -162,6 +166,14 @@ def get_short_percent_float(ticker: str) -> Optional[float]:
         except Exception:
             info = getattr(tk, "info", {}) or {}
         v = info.get("shortPercentOfFloat")
+        if v is None:
+            shares_short = info.get("sharesShort")
+            float_shares = info.get("floatShares") or info.get("sharesFloat")
+            if shares_short is not None and float_shares:
+                try:
+                    v = float(shares_short) / float(float_shares)
+                except Exception:
+                    v = None
         return float(v) if v is not None else None
     except Exception:
         return None
@@ -224,7 +236,7 @@ def volume_label_from_ratio_simple(vr: Optional[float]) -> str:
     return "Niski"
 
 # =========================
-# WYKRESY
+# WYKRESy
 # =========================
 def plot_candles_with_ema(df: pd.DataFrame, ticker: str, bars: int = 180):
     d = df.tail(bars)
@@ -347,9 +359,9 @@ with st.sidebar:
         with colM2:
             f_mcap_max = st.number_input("— MC max (USD)", 0.0, 5_000_000_000_000.0, 2_000_000_000_000.0, step=50_000_000.0, format="%.0f")
 
-        # ---- Short float % ----
-        f_short_on = st.checkbox("Short float % (min)", value=False)
-        f_short_min = st.slider("— Short float ≥ %", 0, 100, 30, step=1)
+        # ---- Short float % (ZAKRES) ----
+        f_short_on = st.checkbox("Short float % (zakres)", value=False)
+        f_short_min, f_short_max = st.slider("— Zakres Short float %", 0, 100, (20, 60), step=1)
 
         st.markdown("---")
         f_gap_on = st.checkbox("Max GAP UP %", value=False)
@@ -660,11 +672,11 @@ if run_scan:
                 mc_tmp = get_market_cap_fast(t)
                 extra_ok = extra_ok and (mc_tmp is not None) and (float(f_mcap_min) <= mc_tmp <= float(f_mcap_max))
 
-            # Short float % (0–1 z Yahoo) — filtr minimalny
+            # Short float % (0–1 z Yahoo) — filtr zakresu
             spf_tmp = None
             if f_short_on:
-                spf_tmp = get_short_percent_float(t)
-                extra_ok = extra_ok and (spf_tmp is not None) and (spf_tmp * 100.0 >= float(f_short_min))
+                spf_tmp = get_short_percent_float(t)  # 0..1
+                extra_ok = extra_ok and (spf_tmp is not None) and (float(f_short_min) <= spf_tmp*100.0 <= float(f_short_max))
 
             if extra_ok and f_gap_on and pd.notna(last.get("GapUpPct")):
                 extra_ok = float(last.get("GapUpPct")) <= float(f_gap_max)
@@ -755,70 +767,7 @@ def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> p
 # =========================
 PRZEWODNIK_MD = r"""
 # Przewodnik użytkownika – RocketStock
-
-## RSI (Relative Strength Index)
-- **Co to:** „siła” ruchu ceny w skali 0–100 (zwykle 14 sesji).
-- **Jak czytać:** **> 70** wykupienie, **30–50** neutralnie/akumulacja, **< 30** wyprzedanie.
-- **W aplikacji:** jeśli RSI jest **poza** Twoim zakresem (np. **30–50**), spółka **nie dostaje sygnału**.
-
-## EMA200 (Exponential Moving Average – 200 sesji)
-- **Co to:** długoterminowa średnia trendu.
-- **Jak czytać:** **Close > EMA200** = po „byczej” stronie; bardzo daleko nad EMA200 = ryzyko „pościgu”.
-- **W aplikacji:** możesz wymagać Close > EMA200 i ustawić **Max % nad EMA200**.
-
-## EMA50
-- **Co to:** średnia krótszego horyzontu.
-- **W aplikacji:** wykorzystywana m.in. do wejść **pullback**.
-
-## MACD (Moving Average Convergence/Divergence)
-- **Co to:** wskaźnik tempa zmiany trendu (linia MACD, linia sygnałowa, histogram).
-- **Jak czytać:** **bullish cross** = MACD przecina **w górę** linię sygnałową (często start impetu).
-- **W aplikacji:** możesz wymagać, by przecięcie było **w ostatnich N dniach**.
-
-## Wolumen / AvgVolume / VolRatio
-- **Definicja VolRatio:** dzisiejszy wolumen / średni wolumen (MA20/MA50).
-- **Kategorie:** **Wysoki** (≥ 1.2×), **Średni** (0.8–1.2×), **Niski** (< 0.8×).
-- **W aplikacji:** opcja „Wymagaj potwierdzenia wolumenem” szuka sesji **powyżej średniej**.
-
-## ATR i ATR% (Average True Range)
-- **Co to:** miara zmienności.
-- **ATR%:** ATR / Close × 100% — jak „szarpie” wykres.
-- **W aplikacji:** filtrem **Max ATR%** odrzucisz najbardziej nerwowe walory.
-
-## GAP UP %
-- **Co to:** różnica między dzisiejszym otwarciem a wczorajszym zamknięciem (w %).
-- **W aplikacji:** duże luki możesz przefiltrować limitem „Max GAP UP %”.
-
-## DistEMA200Pct
-- **Co to:** o ile (%) cena jest powyżej/poniżej EMA200.
-- **W aplikacji:** **Max % nad EMA200** ogranicza „pościg” za ceną.
-
-## High_3m i RoomToHighPct
-- **Co to:** najwyższa cena z ~3 miesięcy oraz „oddech” do tego poziomu (w %).
-- **W aplikacji:** możesz wymagać min. odległości, aby nie kupować pod opór.
-
-## HH3 / HL3
-- **Co to:** trzy kolejne rosnące szczyty i trzy kolejne rosnące dołki.
-- **Znaczenie:** „zdrowa” sekwencja wzrostowa.
-
-## Diamenty (ocena sygnału)
-- **Co wpływa:** pozycja ceny vs **EMA200** (wg trybu), **RSI** w zakresie, świeży **MACD cross**, **wolumen > średnia** (jeśli wymagany).
-- **Progi:** 💎💎💎 / 💎💎 / 💎 / – (informacja techniczna, nie rekomendacja).
-
-## Ranking
-- **Co to:** TOP kandydaci spośród 💎💎💎 (wynik 0–100).
-- **Składniki wyniku:** rozsądny dystans nad EMA200, bliskość środka zakresu RSI, aktywność wolumenu, płynność.
-
-## Jak używać
-- Ustaw **RSI** (np. 30–50), **MACD okno** (np. 3 dni), **Wymagaj wolumenu**.
-- (Opcjonalnie) **Close > EMA200** i **Max % nad EMA200** (np. 10–15%).
-- Uruchom skaner, wybierz z **Rankingu** albo z listy, a potem sprawdź **tabelę**, **wykresy** i **Podsumowanie**.
-
-## Zastrzeżenie
-- **RocketStock ma charakter wyłącznie edukacyjny i informacyjny.**
-- Nie stanowi rekomendacji inwestycyjnej ani porady finansowej, podatkowej czy prawnej.
-- Decyzje inwestycyjne podejmujesz samodzielnie i na własne ryzyko.
-- Rozważ konsultację z licencjonowanym doradcą. Inwestowanie wiąże się z ryzykiem utraty kapitału.
+(...)
 """
 
 tab_scan, tab_guide = st.tabs(["Skaner", "Przewodnik"])
@@ -875,9 +824,15 @@ with tab_scan:
             f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
             f"<span class='pill'>Okres: <b>{period}</b></span>"
             f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>"
-            + (f"<span class='pill'>Short float ≥ <b>{f_short_min}%</b></span>" if f_short_on else ""),
+            + (f"<span class='pill'>Short float: <b>{f_short_min}–{f_short_max}%</b></span>" if f_short_on else ""),
             unsafe_allow_html=True
         )
+
+        # --- SORTOWANIE BEZ ag-Grid ---
+        st.markdown("##### Sortowanie listy")
+        sort_cols = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
+        sort_by = st.selectbox("Sortuj po", sort_cols, index=0, key="sort_by")
+        sort_dir = st.radio("Kierunek", ["Rosnąco","Malejąco"], index=0, horizontal=True, key="sort_dir")
 
         df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","MarketCap","ShortPctFloat"]].copy()
         df_show.rename(columns={"ShortPctFloat": "Short%", "MarketCap": "MC (B USD)"}, inplace=True)
@@ -885,6 +840,11 @@ with tab_scan:
         for c in ["Close","RSI","EMA200","Short%"]:
             if c in df_show.columns:
                 df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
+
+        # zastosuj sortowanie
+        ascending = (sort_dir == "Rosnąco")
+        if sort_by in df_show.columns:
+            df_show = df_show.sort_values(by=sort_by, ascending=ascending, na_position="last", kind="mergesort")
 
         rows = len(df_show)
         row_h = 35
