@@ -121,9 +121,9 @@ def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
     return df
 
 def macd_bullish_cross_recent(df: pd.DataFrame, lookback: int) -> bool:
-    macd = df["MACD"]; sig  = df["MACD_signal"]
+    macd = df["MACD"]; sig = df["MACD_signal"]
     cross_up = (macd.shift(1) <= sig.shift(1)) & (macd > sig)
-    return bool(cross_up.tail(lookback).any()))
+    return bool(cross_up.tail(lookback).any())
 
 @st.cache_data(show_spinner=False)
 def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataFrame]:
