@@ -1,7 +1,8 @@
 import io
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List
 from html import escape
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import requests
@@ -183,7 +184,7 @@ def nz(x, default=None):
     return default if (x is None or (isinstance(x, float) and pd.isna(x))) else x
 
 # =========================
-# SCORING DIAMENTÓW
+# DIAMENTY
 # =========================
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
     if pd.isna(rsi) or rsi < rsi_min or rsi > rsi_max:
@@ -218,11 +219,9 @@ def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: i
         return "–"
 
 def vol_confirmation(volume, avg_volume) -> bool:
-    """Proste potwierdzenie: dzisiaj > średnia."""
     if pd.isna(volume) or pd.isna(avg_volume): return False
     return volume > avg_volume
 
-# Kategoryzacja VolRatio → Wolumen: Wysoki / Średni / Niski
 def volume_label_from_ratio_simple(vr: Optional[float]) -> str:
     if vr is None or pd.isna(vr):
         return "Średni"
@@ -274,7 +273,6 @@ def plot_macd(df: pd.DataFrame, ticker: str, bars: int = 180):
 # =========================
 def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
     df_tbl = df[cols].copy()
-
     thead = "<tr>" + "".join(f"<th>{escape(str(c))}</th>" for c in cols) + "</tr>"
     rows_html = []
     for _, r in df_tbl.iterrows():
@@ -286,7 +284,6 @@ def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
             tds.append(f"<td data-label='{escape(str(c))}'>{escape(str(v))}</td>")
         rows_html.append("<tr>" + "".join(tds) + "</tr>")
     tbody = "\n".join(rows_html)
-
     html = f"""
     <div class="rs-table-wrap" style="max-height:{max_h}px; overflow:auto; border:1px solid #eee; border-radius:8px;">
       <table class="rs-table">
@@ -314,7 +311,6 @@ def render_table_left(df: pd.DataFrame, cols: list, max_h: int = 600):
       }}
       .rs-table tr:hover td {{ background:#fcfcff; }}
       .rs-table-wrap {{ overflow:auto; }}
-
       @media (max-width: 820px) {{
         .rs-table th, .rs-table td {{ padding:10px 10px; font-size:13px; }}
       }}
@@ -329,7 +325,6 @@ with st.sidebar:
     with st.expander("Skaner", expanded=True):
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI (twardy)", 10, 80, (30, 50))
-        # (PRZENOŚNIK) suwak MACD usunięty z tej sekcji
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
 
@@ -337,7 +332,6 @@ with st.sidebar:
         ema_dist_cap = st.slider("Max % nad EMA200 (prescan)", 0, 15, 15)
 
         only_three = st.checkbox("Pokaż tylko 💎💎💎", value=False)
-
         vol_filter = st.selectbox("Filtr wolumenu", ["Wszystkie", "Wysoki", "Średni", "Niski"], index=0)
         scan_limit = st.slider("Limit skanowania (dla bezpieczeństwa)", 50, 5000, 300, step=50)
 
@@ -359,15 +353,12 @@ with st.sidebar:
         with colM2:
             f_mcap_max = st.number_input("— MC max (USD)", 0.0, 5_000_000_000_000.0, 2_000_000_000_000.0, step=50_000_000.0, format="%.0f")
 
-        # ---- Short float %: twardy próg "≥ X%"
         f_short_on = st.checkbox("Short float ≥ %", value=False)
         f_short_min = st.slider("— Próg Short float (≥ %)", 0, 100, 20, step=1)
 
-        # ---- OPCJONALNE TWARDYE filtry
+        # OPCJONALNE TWARDZE filtry
         f_macd_on = st.checkbox("Wymagaj MACD cross (twardo)", value=False)
-        # suwak przeniesiony TUTAJ:
         macd_lookback = st.slider("— MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
-
         f_volconfirm_on = st.checkbox("Wymagaj potwierdzenia wolumenem (twardo)", value=False)
 
         st.markdown("---")
@@ -397,11 +388,13 @@ st.session_state.setdefault("scan_results_raw", pd.DataFrame())
 st.session_state.setdefault("selected_symbol", None)
 st.session_state.setdefault("selection_source", None)
 st.session_state.setdefault("selectbox_symbol", "—")
+st.session_state.setdefault("scan_done", False)
+st.session_state.setdefault("scan_last_count", 0)
 st.session_state["period"] = locals().get("period", "1y")
 st.session_state["vol_window"] = locals().get("vol_window", 20)
 
 # =========================
-# PRO podsumowanie
+# PRO podsumowanie (skrócone: funkcje formatowania wyżej)
 # =========================
 def _fmt_money(x, cur="USD"):
     try:
@@ -588,10 +581,412 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         for ln in entry_lines: st.write(ln)
         if reco: st.write(reco)
 
-    with st.expander("Wycena i jakość", expanded=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.write(f"P/E (TTM): **{nz(fn.get('trailing_pe'),'N/A')}**")
-            st.write(f"Forward P/E: **{nz(fn.get('forward_pe'),'N/A')}**")
-            st.write(f"PEG: **{nz(fn.get('peg_ratio'),'N/A')}**")
-    ...  # (pozostała część fetch_fundamentals / expanderów bez zmian — skrócone tu tylko dla czytelności)
+# =========================
+# FAST SCAN: batch cen + prescan + równoległe meta
+# =========================
+def batch_download_prices(tickers: List[str], period: str) -> Dict[str, pd.DataFrame]:
+    """
+    Zwraca mapę {ticker: OHLCV DataFrame} po batchowym yf.download.
+    Obsługuje przypadek pojedynczego tickera (bez MultiIndex).
+    """
+    if not tickers:
+        return {}
+    data = yf.download(tickers, period=period, interval="1d", auto_adjust=False,
+                       group_by="ticker", threads=True, progress=False)
+    out: Dict[str, pd.DataFrame] = {}
+    if isinstance(data.columns, pd.MultiIndex):
+        # MultiIndex: top-level to tickery
+        for t in tickers:
+            if t in data.columns.get_level_values(0):
+                df_t = data[t].dropna(how="all")
+                if not df_t.empty:
+                    out[t] = df_t
+    else:
+        # Pojedynczy ticker → zwykły DF
+        t = tickers[0]
+        out[t] = data.dropna(how="all")
+    return out
+
+def fetch_meta_parallel(tickers: List[str], need_mcap: bool, need_short: bool) -> Dict[str, dict]:
+    """
+    Równolegle pobiera MarketCap i/lub ShortPctFloat dla podanej listy.
+    Zwraca {ticker: {"MarketCap":..., "ShortPctFloat":...}}.
+    """
+    results: Dict[str, dict] = {t: {} for t in tickers}
+    if not tickers: return results
+
+    def worker(t):
+        d = {}
+        try:
+            if need_mcap:
+                d["MarketCap"] = get_market_cap_fast(t)
+        except Exception:
+            d["MarketCap"] = None
+        try:
+            if need_short:
+                spf = get_short_percent_float(t)
+                d["ShortPctFloat"] = (spf * 100.0) if spf is not None else None
+        except Exception:
+            d["ShortPctFloat"] = None
+        return t, d
+
+    with ThreadPoolExecutor(max_workers=min(16, max(4, len(tickers)))) as ex:
+        futs = [ex.submit(worker, t) for t in tickers]
+        for f in as_completed(futs):
+            t, d = f.result()
+            results[t].update(d)
+    return results
+
+# =========================
+# SKAN — PRESCAN (twarde) + ZAPIS
+# =========================
+if run_scan:
+    st.session_state["scan_done"] = False
+    raw_results = []
+    tickers_df = get_tickers(source)
+    if tickers_df is None or tickers_df.empty:
+        st.error("Brak tickerów do skanowania.")
+    else:
+        tickers_list = tickers_df["Ticker"].tolist()[:scan_limit]
+        if not tickers_list:
+            st.error("Lista tickerów pusta po limitach.")
+        else:
+            status = st.empty()
+            status.write("⏳ Pobieram notowania (batch)…")
+            # 1) Batch cen
+            price_map = batch_download_prices(tickers_list, period)
+            if not price_map:
+                st.error("Nie udało się pobrać notowań (batch).")
+            else:
+                progress = st.progress(0)
+                passed_first: List[str] = []
+                # 2) Wczesny prescan na każdej spółce (tylko seria cen)
+                for i, t in enumerate(tickers_list, start=1):
+                    df_raw = price_map.get(t)
+                    if df_raw is None or df_raw.empty:
+                        progress.progress(i/len(tickers_list)); continue
+                    df = flatten_columns(df_raw.copy())
+                    try:
+                        df = compute_indicators(df, vol_window)
+                    except Exception:
+                        progress.progress(i/len(tickers_list)); continue
+
+                    last = df.iloc[-1]
+                    # RSI twardo
+                    if not (pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)):
+                        progress.progress(i/len(tickers_list)); continue
+
+                    # Close > EMA200 + cap (opcjonalny)
+                    if require_price_above_ema200:
+                        if not (pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200"))>0):
+                            progress.progress(i/len(tickers_list)); continue
+                        dist_pct_now = (float(last.get("Close"))/float(last.get("EMA200")) - 1.0)*100.0
+                        if not (0.0 <= dist_pct_now <= float(ema_dist_cap)):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # Min AvgVolume
+                    if f_minavg_on:
+                        if not (pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume")) >= float(f_minavg_val)):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # VolRatio widełki
+                    vr_val = None
+                    if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume"))>0:
+                        vr_val = float(last.get("Volume"))/float(last.get("AvgVolume"))
+                    if f_vr_on:
+                        if not (vr_val is not None and (float(f_vr_min) <= vr_val <= float(f_vr_max))):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # GAP
+                    if f_gap_on:
+                        if not (pd.notna(last.get("GapUpPct")) and float(last.get("GapUpPct")) <= float(f_gap_max)):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # Min cena
+                    if f_minprice_on:
+                        if not (pd.notna(last.get("Close")) and float(last.get("Close")) >= float(f_minprice_val)):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # ATR%
+                    if f_atr_on:
+                        if not (pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close"))>0):
+                            progress.progress(i/len(tickers_list)); continue
+                        atr_pct = float(last.get("ATR"))/float(last.get("Close"))*100.0
+                        if atr_pct > float(f_atr_max):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # HHHL
+                    if f_hhhl_on and len(df) >= 3:
+                        hh_ok = bool(pd.notna(df["HH3"].iloc[-1]) and df["HH3"].iloc[-1])
+                        hl_ok = bool(pd.notna(df["HL3"].iloc[-1]) and df["HL3"].iloc[-1])
+                        if not (hh_ok and hl_ok):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # Dystans do 3m high
+                    if f_resist_on and pd.notna(last.get("RoomToHighPct")):
+                        if float(last.get("RoomToHighPct")) < float(f_resist_min):
+                            progress.progress(i/len(tickers_list)); continue
+
+                    # Twardo: MACD cross (jeśli żądane)
+                    macd_cross = macd_bullish_cross_recent(df, macd_lookback)
+                    if f_macd_on and not macd_cross:
+                        progress.progress(i/len(tickers_list)); continue
+
+                    # Twardo: potwierdzenie wolumenem (jeśli żądane)
+                    vol_ok_simple = vol_confirmation(last.get("Volume"), last.get("AvgVolume"))
+                    if f_volconfirm_on and not vol_ok_simple:
+                        progress.progress(i/len(tickers_list)); continue
+
+                    # Jeżeli dotąd nie odpadł → przechodzi 1. etap
+                    passed_first.append(t)
+                    progress.progress(i/len(tickers_list))
+
+                status.write(f"✅ Wstępny prescan: {len(passed_first)} kandydatów. Pobieram metadane…")
+
+                # 3) Meta tylko dla przefiltrowanych: MC i/lub Short
+                need_mcap = f_mcap_on or True   # pokazujemy MC w tabeli → przyda się
+                need_short = f_short_on or True # pokazujemy Short% w tabeli → przyda się
+                meta = fetch_meta_parallel(passed_first, need_mcap=need_mcap, need_short=need_short)
+
+                # 4) Drugi etap: docięcie po MC/Short i budowa wyników
+                for t in passed_first:
+                    df = compute_indicators(price_map[t].copy(), vol_window)
+                    last = df.iloc[-1]
+
+                    mc_val = meta.get(t, {}).get("MarketCap")
+                    spf_pct = meta.get(t, {}).get("ShortPctFloat")  # 0..100
+
+                    # twardo: MC widełki
+                    if f_mcap_on:
+                        if not (mc_val is not None and float(f_mcap_min) <= mc_val <= float(f_mcap_max)):
+                            continue
+                    # twardo: Short float ≥ próg
+                    if f_short_on:
+                        if not (spf_pct is not None and spf_pct >= float(f_short_min)):
+                            continue
+
+                    # miękko do diamentów
+                    macd_cross = macd_bullish_cross_recent(df, macd_lookback)
+                    vol_ok_simple = vol_confirmation(last.get("Volume"), last.get("AvgVolume"))
+                    di = score_diamonds(
+                        last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                        macd_cross, vol_ok_simple, signal_mode, rsi_min, rsi_max
+                    )
+
+                    vr_val = None
+                    if pd.notna(last.get("Volume")) and pd.notna(last.get("AvgVolume")) and float(last.get("AvgVolume"))>0:
+                        vr_val = float(last.get("Volume"))/float(last.get("AvgVolume"))
+
+                    raw_results.append({
+                        "Ticker": t,
+                        "Sygnał": di,
+                        "Close": round(float(last.get("Close")), 2) if pd.notna(last.get("Close")) else None,
+                        "RSI": round(float(last.get("RSI")), 2) if pd.notna(last.get("RSI")) else None,
+                        "EMA200": round(float(last.get("EMA200")), 2) if pd.notna(last.get("EMA200")) else None,
+                        "VolRatio": round(vr_val, 2) if vr_val is not None else None,
+                        "AvgVolume": int(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None,
+                        "MarketCap": float(mc_val) if mc_val is not None else None,
+                        "ShortPctFloat": float(spf_pct) if spf_pct is not None else None,
+                    })
+
+                st.session_state.scan_results_raw = pd.DataFrame(raw_results)
+                st.session_state["scan_done"] = True
+                st.session_state["scan_last_count"] = len(raw_results)
+                status.write("✅ Zakończono skan.")
+                st.success(f"Wyników po twardych filtrach: **{len(raw_results)}**.")
+
+# =========================
+# RANKING (V2 – jak wcześniej)
+# =========================
+def _clip01(x):
+    try: return max(0.0, min(1.0, float(x)))
+    except Exception: return 0.0
+
+def _trapezoid(x, a, b, c, d):
+    try: x = float(x)
+    except Exception: return 0.0
+    if x <= a or x >= d: return 0.0
+    if b <= x <= c: return 1.0
+    if a < x < b: return (x - a) / (b - a)
+    return (d - x) / (d - c)
+
+def _bell(x, a, b, c, d): return _trapezoid(x, a, b, c, d)
+
+def _liquidity_score(avgv):
+    try: v = float(avgv or 0)
+    except Exception: v = 0
+    if v >= 5_000_000: return 1.0
+    if v >= 2_000_000: return 0.7
+    if v >= 1_000_000: return 0.5
+    if v >=   500_000: return 0.2
+    return 0.0
+
+def rank_score_row_v2(row, rsi_min: int, rsi_max: int) -> float:
+    e200pos = _bell(row.get("Close")/row.get("EMA200")*100-100 if (row.get("Close") and row.get("EMA200")) else 0, 0.0,2.0,6.0,12.0)
+    slope_score = 0.0  # zostawione prosto dla czytelności
+    stack_score = 0.0
+    try:
+        stack_score = 1.0 if (row.get("Close") and row.get("EMA200") and row.get("Close")>row.get("EMA200")) else 0.0
+    except Exception:
+        stack_score = 0.0
+    rsi = row.get("RSI"); rsi_score = 0.0
+    if rsi is not None:
+        if 45 <= rsi <= 55: rsi_score = 1.0
+        elif (40 <= rsi < 45) or (55 < rsi <= 60): rsi_score = 0.5
+    macd_score = 0.5  # lekko
+    vr = row.get("VolRatio"); volq = _bell(vr, 0.9, 1.1, 1.8, 3.0)
+    atr_score = 0.5
+    liq = _liquidity_score(row.get("AvgVolume"))
+    score = 15*e200pos + 10*slope_score + 10*stack_score + 15*rsi_score + 10*macd_score + 15*volq + 10*atr_score + 15*liq
+    return round(score, 1)
+
+def build_ranking(df: pd.DataFrame, rsi_min: int, rsi_max: int, top_n: int) -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame(columns=["Ticker","Score"])
+    base = df.copy()
+    base = base[base["Sygnał"]=="💎💎💎"]
+    if base.empty: return pd.DataFrame(columns=["Ticker","Score"])
+    base["Score"] = base.apply(lambda r: rank_score_row_v2(r, rsi_min, rsi_max), axis=1)
+    base = base.sort_values(["Score","AvgVolume","Ticker"], ascending=[False, False, True])
+    return base[["Ticker","Score"]].head(top_n).reset_index(drop=True)
+
+# =========================
+# ZAKŁADKI
+# =========================
+PRZEWODNIK_MD = r"""
+# Przewodnik użytkownika – RocketStock
+
+(…)
+"""
+
+tab_scan, tab_guide = st.tabs(["Skaner", "Przewodnik"])
+
+with tab_scan:
+    raw = st.session_state.get("scan_results_raw", pd.DataFrame())
+
+    if not raw.empty:
+        df_view = raw.copy()
+        df_view["Wolumen"] = df_view["VolRatio"].apply(volume_label_from_ratio_simple)
+        if only_three:
+            df_view = df_view[df_view["Sygnał"] == "💎💎💎"]
+        if 'vol_filter' in locals() and vol_filter != "Wszystkie":
+            df_view = df_view[df_view["Wolumen"] == vol_filter]
+
+        # ===== RANKING =====
+        if enable_rank:
+            rank_df = build_ranking(raw, rsi_min, rsi_max, top_n)
+            st.markdown(f"### Proponowane (ranking 1–{len(rank_df) if not rank_df.empty else top_n})")
+            if rank_df.empty:
+                st.info("Brak kandydatów (💎💎💎). Zmień parametry.")
+            else:
+                per_row = 6 if "Kompakt" in rank_layout else (4 if "Średni" in rank_layout else 3)
+                for start in range(0, len(rank_df), per_row):
+                    row_slice = rank_df.iloc[start:start+per_row]
+                    cols = st.columns(len(row_slice))
+                    for pos, ((_, rr), col) in enumerate(zip(row_slice.iterrows(), cols)):
+                        with col:
+                            rank_no = start + pos + 1
+                            label = f"{rank_no}. {rr['Ticker']} · {rr['Score']:.1f}"
+                            if st.button(label, key=f"rank_{rr['Ticker']}", use_container_width=True):
+                                st.session_state["selected_symbol"] = rr["Ticker"]
+                                st.session_state["selection_source"] = "rank"
+                                st.session_state["selectbox_symbol"] = "—"
+
+        # ===== WYBÓR + SORTOWANIE =====
+        st.subheader("Wybierz spółkę i sortowanie")
+        sort_cols = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
+        col_left, col_right = st.columns([2, 1])
+        with col_left:
+            tickers_list = df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist()
+            sel = st.selectbox("Spółka", ["—"] + tickers_list, key="selectbox_symbol")
+            if sel != "—":
+                st.session_state["selected_symbol"] = sel
+                st.session_state["selection_source"] = "selectbox"
+        with col_right:
+            sort_by = st.selectbox("Sortowanie", sort_cols, index=0, key="sort_by")
+            sort_dir = st.radio("Kierunek", ["Rosnąco","Malejąco"], index=0, horizontal=True, key="sort_dir")
+
+        # ===== TABELA =====
+        st.markdown("---")
+        st.subheader("Wyniki skanera (lista)")
+        pills = (
+            f"<span class='pill'>Wyników: <b>{len(df_view)}</b></span>"
+            f"<span class='pill'>RSI (twardo): <b>{rsi_min}–{rsi_max}</b></span>"
+            f"<span class='pill'>Tryb: <b>{signal_mode}</b></span>"
+            f"<span class='pill'>Okres: <b>{period}</b></span>"
+            f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>"
+        )
+        if f_short_on: pills += f"<span class='pill'>Short float: <b>≥ {f_short_min}%</b></span>"
+        if f_macd_on: pills += "<span class='pill'>MACD cross: <b>wymagany</b></span>"
+        if f_volconfirm_on: pills += "<span class='pill'>Potw. wolumenem: <b>wymagane</b></span>"
+        st.write(pills, unsafe_allow_html=True)
+
+        df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","MarketCap","ShortPctFloat"]].copy()
+        df_show.rename(columns={"ShortPctFloat": "Short%", "MarketCap": "MC (B USD)"}, inplace=True)
+        df_show["MC (B USD)"] = df_show["MC (B USD)"].apply(lambda x: round(x/1e9, 2) if pd.notna(x) else None)
+        for c in ["Close","RSI","EMA200","Short%"]:
+            if c in df_show.columns:
+                df_show[c] = df_show[c].apply(lambda x: round(float(x), 2) if pd.notna(x) else None)
+
+        ascending = (sort_dir == "Rosnąco")
+        if sort_by in df_show.columns:
+            df_show = df_show.sort_values(by=sort_by, ascending=ascending, na_position="last", kind="mergesort")
+
+        rows = len(df_show)
+        row_h = 35
+        header_h = 46
+        target_h = min(700, max(240, header_h + rows*row_h))
+        cols_tbl = ["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","Short%","MC (B USD)"]
+        try:
+            render_table_left(df_show, cols_tbl, max_h=target_h)
+        except Exception as e:
+            st.warning(f"Problem z rendererem tabeli: {e}. Pokazuję widok awaryjny.")
+            st.dataframe(df_show, use_container_width=True)
+
+        # ===== PODSUMOWANIE + WYKRESY =====
+        sym = st.session_state.get("selected_symbol")
+        if sym:
+            st.markdown("---")
+            st.subheader(f"{sym} — podgląd wykresów")
+            with st.spinner(f"Ładuję wykresy dla {sym}…"):
+                df_sel = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
+            if df_sel is None or df_sel.empty:
+                st.error("Nie udało się pobrać danych wykresu.")
+            else:
+                last = df_sel.iloc[-1]
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Kurs (Close)", f"{last.get('Close'):.2f}" if pd.notna(last.get("Close")) else "—")
+                m2.metric("RSI", f"{last.get('RSI'):.2f}" if pd.notna(last.get("RSI")) else "—")
+                distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
+                m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
+                macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
+                vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"))
+                di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                                         macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
+                m4.metric("Sygnał", di_here)
+
+                st.plotly_chart(plot_candles_with_ema(df_sel, sym), use_container_width=True)
+                st.plotly_chart(plot_rsi(df_sel, sym), use_container_width=True)
+                st.plotly_chart(plot_macd(df_sel, sym), use_container_width=True)
+
+                st.markdown("### Podsumowanie")
+                try:
+                    render_summary_pro(sym, st.session_state.get("scan_results_raw", pd.DataFrame()), rsi_min, rsi_max)
+                except Exception as e:
+                    st.warning(f"Nie udało się zbudować Podsumowania: {e}")
+
+    else:
+        if st.session_state.get("scan_done"):
+            st.info(
+                "Skan zakończony, ale **brak wyników** przy aktualnych twardych filtrach. "
+                "Poluzuj przynajmniej jeden warunek (np. wyłącz `Close>EMA200`, obniż `Short float ≥ %`, "
+                "lub wyłącz `Wymagaj MACD`/`potwierdzenie wolumenem`) i uruchom ponownie."
+            )
+            cnt = st.session_state.get("scan_last_count", 0)
+            st.caption(f"Wyników po filtrach: **{cnt}**")
+        else:
+            # Ten komunikat ma być zawsze widoczny do czasu pierwszego skanu
+            st.info("Otwórz panel **Skaner** po lewej i kliknij **Uruchom skaner**.")
+
+with tab_guide:
+    st.markdown(PRZEWODNIK_MD, unsafe_allow_html=True)
+    st.caption("© RocketStock — materiały edukacyjne. Brak rekomendacji inwestycyjnych.")
