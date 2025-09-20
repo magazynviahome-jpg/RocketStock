@@ -183,7 +183,7 @@ def nz(x, default=None):
     return default if (x is None or (isinstance(x, float) and pd.isna(x))) else x
 
 # =========================
-# SCORING DIAMENTÓW – BEZ ZMIAN
+# SCORING DIAMENTÓW
 # =========================
 def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: int, rsi_max: int) -> str:
     if pd.isna(rsi) or rsi < rsi_min or rsi > rsi_max:
@@ -217,8 +217,8 @@ def score_diamonds(price, ema200, rsi, macd_cross, vol_ok, mode: str, rsi_min: i
         if pts == 1: return "💎"
         return "–"
 
-def vol_confirmation(volume, avg_volume, require: bool) -> bool:
-    if not require: return True
+def vol_confirmation(volume, avg_volume) -> bool:
+    """Proste potwierdzenie: dzisiaj > średnia."""
     if pd.isna(volume) or pd.isna(avg_volume): return False
     return volume > avg_volume
 
@@ -330,7 +330,6 @@ with st.sidebar:
         signal_mode = st.radio("Tryb sygnału", ["Konserwatywny", "Umiarkowany", "Agresywny"], index=1, horizontal=True)
         rsi_min, rsi_max = st.slider("Przedział RSI (twardy)", 10, 80, (30, 50))
         macd_lookback = st.slider("MACD: przecięcie (ostatnie N dni)", 1, 10, 3)
-        use_volume = st.checkbox("Wymagaj potwierdzenia wolumenem", value=True)
         vol_window = st.selectbox("Średni wolumen (okno)", ["MA20", "MA50"], index=0)
         vol_window = 20 if vol_window == "MA20" else 50
 
@@ -363,6 +362,10 @@ with st.sidebar:
         # ---- Short float %: twardy próg "≥ X%"
         f_short_on = st.checkbox("Short float ≥ %", value=False)
         f_short_min = st.slider("— Próg Short float (≥ %)", 0, 100, 20, step=1)
+
+        # ---- NOWE: opcjonalne TWARDYE filtry
+        f_macd_on = st.checkbox("Wymagaj MACD cross (twardo)", value=False)
+        f_volconfirm_on = st.checkbox("Wymagaj potwierdzenia wolumenem (twardo)", value=False)
 
         st.markdown("---")
         f_gap_on = st.checkbox("Max GAP UP %", value=False)
@@ -555,7 +558,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     mc_b_disp = f"{round(mc_b/1e9, 2)}" if (mc_b is not None and not pd.isna(mc_b)) else "—"
     short_pct = row.get("ShortPctFloat")
 
-    st.markdown("**Dane z listy**")
+    st.markdown("**Dane z tabeli**")
     colA, colB, colC, colD = st.columns(4)
     with colA:
         st.write(f"Sygnał: **{row.get('Sygnał') or '—'}**")
@@ -639,7 +642,7 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
                 st.write("Float shares: **N/A**")
 
 # =========================
-# SKAN — TWARDY PRESCAN + ZAPIS (Z POPRAWKAMI SHORT FLOAT i KOMUNIKATEM)
+# SKAN — PRESCAN (twarde) + ZAPIS
 # =========================
 if run_scan:
     raw_results = []
@@ -661,7 +664,7 @@ if run_scan:
             if not (pd.notna(last.get("RSI")) and (rsi_min <= float(last.get("RSI")) <= rsi_max)):
                 progress.progress(i/len(tickers_list)); continue
 
-            # 2) Close > EMA200 + cap
+            # 2) Close > EMA200 + cap (opcjonalny prescan)
             dist_pct_now = None
             if require_price_above_ema200:
                 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) and float(last.get("EMA200")) > 0:
@@ -694,7 +697,7 @@ if run_scan:
                 if not (mc_tmp is not None and float(f_mcap_min) <= mc_tmp <= float(f_mcap_max)):
                     progress.progress(i/len(tickers_list)); continue
 
-            # 6) Short float ≥ próg (twardo)
+            # 6) Short float ≥ próg
             spf_tmp = None
             if f_short_on:
                 spf_tmp = get_short_percent_float(t)  # 0..1
@@ -735,16 +738,24 @@ if run_scan:
                 if not (room_to_high is not None and float(room_to_high) >= float(f_resist_min)):
                     progress.progress(i/len(tickers_list)); continue
 
-            # — Diamenty i zapisy
-            vol_ok = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), use_volume)
+            # 12) NOWE: twarde wymagania — MACD cross i/lub wolumen
             macd_cross = macd_bullish_cross_recent(df, macd_lookback)
-            di = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
-                                macd_cross, vol_ok, signal_mode, rsi_min, rsi_max)
+            if f_macd_on and not macd_cross:
+                progress.progress(i/len(tickers_list)); continue
+
+            vol_ok_simple = vol_confirmation(last.get("Volume"), last.get("AvgVolume"))
+            if f_volconfirm_on and not vol_ok_simple:
+                progress.progress(i/len(tickers_list)); continue
+
+            # — Diamenty i zapisy (wolumen jako miękki składnik)
+            di = score_diamonds(
+                last.get("Close"), last.get("EMA200"), last.get("RSI"),
+                macd_cross, vol_ok_simple, signal_mode, rsi_min, rsi_max
+            )
 
             mc = mc_tmp if mc_tmp is not None else get_market_cap_fast(t)
             spf = spf_tmp if spf_tmp is not None else get_short_percent_float(t)  # 0–1
 
-            # Dodatkowe metryki dla V2 rankingu
             ema50 = last.get("EMA50"); ema200 = last.get("EMA200"); close = last.get("Close")
             stack_ok = (pd.notna(close) and pd.notna(ema50) and pd.notna(ema200) and (close>ema50>ema200))
             ema200_slope5 = last.get("EMA200_Slope5") if pd.notna(last.get("EMA200_Slope5")) else None
@@ -938,6 +949,8 @@ with tab_scan:
             f"<span class='pill'>Close>EMA200 cap: <b>0–{ema_dist_cap}%</b></span>"
         )
         pills += (f"<span class='pill'>Short float: <b>≥ {f_short_min}%</b></span>" if f_short_on else "")
+        pills += (f"<span class='pill'>MACD cross: <b>wymagany</b></span>" if f_macd_on else "")
+        pills += (f"<span class='pill'>Potw. wolumenem: <b>wymagane</b></span>" if f_volconfirm_on else "")
         st.write(pills, unsafe_allow_html=True)
 
         df_show = df_view[["Ticker","Sygnał","Close","RSI","EMA200","Wolumen","MarketCap","ShortPctFloat"]].copy()
@@ -980,7 +993,7 @@ with tab_scan:
                 distv = (last.get("Close")/last.get("EMA200")-1)*100 if pd.notna(last.get("Close")) and pd.notna(last.get("EMA200")) else None
                 m3.metric("Dystans do EMA200", f"{distv:.2f}%" if distv is not None else "—")
                 macd_cross_here = macd_bullish_cross_recent(df_sel, locals().get("macd_lookback",3))
-                vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"), locals().get("use_volume",True))
+                vol_ok_here = vol_confirmation(last.get("Volume"), last.get("AvgVolume"))
                 di_here = score_diamonds(last.get("Close"), last.get("EMA200"), last.get("RSI"),
                                          macd_cross_here, vol_ok_here, locals().get("signal_mode","Umiarkowany"), rsi_min, rsi_max)
                 m4.metric("Sygnał", di_here)
@@ -991,7 +1004,7 @@ with tab_scan:
 
                 st.markdown("### Podsumowanie")
                 try:
-                    render_summary_pro(sym, df_view, rsi_min, rsi_max)
+                    render_summary_pro(sym, st.session_state.get("scan_results_raw", pd.DataFrame()), rsi_min, rsi_max)
                 except Exception as e:
                     st.warning(f"Nie udało się zbudować Podsumowania: {e}")
 
@@ -999,7 +1012,8 @@ with tab_scan:
         if st.session_state.get("scan_done"):
             st.info(
                 "Skan zakończony, ale **brak wyników** przy aktualnych twardych filtrach. "
-                "Poluzuj przynajmniej jeden warunek (np. wyłącz `Close>EMA200` albo obniż `Short float ≥ %`) i uruchom ponownie."
+                "Poluzuj przynajmniej jeden warunek (np. wyłącz `Close>EMA200`, obniż `Short float ≥ %`, "
+                "lub wyłącz `Wymagaj MACD/ potwierdzenie wolumenem`) i uruchom ponownie."
             )
             cnt = st.session_state.get("scan_last_count", 0)
             st.caption(f"Wyników po filtrach: **{cnt}**")
