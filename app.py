@@ -581,18 +581,11 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         with cols[i % 3]:
             st.write(f"**{label}:** {val}")
 
-    # snapshot podstawowe
-    snap = []
-    if pd.notna(close): snap.append(f"Close **${close:.2f}**")
-    if pd.notna(rsi):   snap.append(f"RSI **{rsi:.1f}** (zakres {rsi_min}–{rsi_max})")
-    if dist_pct is not None: snap.append(f"vs EMA200 **{dist_pct:.2f}%**")
-    if pd.notna(vr):    snap.append(f"VR **{vr:.2f}**")
-    if snap:
-        st.write(" · ".join(snap))
+    # (snapshot podstawowe — USUNIĘTY)
 
     # opis spółki — oryginał EN
     if fn.get("long_business_summary"):
-        with st.expander("Business summary (EN)", expanded=False):
+        with st.expander("Opis spółki (EN)", expanded=False):
             st.write(fn["long_business_summary"])
 
     # proponowane wejścia
