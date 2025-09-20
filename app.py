@@ -121,7 +121,7 @@ def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
     return df
 
 def macd_bullish_cross_recent(df: pd.DataFrame, lookback: int) -> bool:
-    macd = df["MACD"]; sig = df["MACD_signal"]
+    macd = df["MACD"]; sig  = df["MACD_signal"]
     cross_up = (macd.shift(1) <= sig.shift(1)) & (macd > sig)
     return bool(cross_up.tail(lookback).any())
 
@@ -534,82 +534,7 @@ def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[fl
     entry_pullback = (float(base_ema) + 0.10*float(atr)) if pd.notna(base_ema) else None
     return (entry_breakout, entry_pullback)
 
-# ====== LOKALIZACJA PL (prosty słowniczek + tłumaczenie opisów) ======
-SECTOR_MAP_PL = {
-    "Technology": "Technologie",
-    "Healthcare": "Ochrona zdrowia",
-    "Consumer Cyclical": "Dobra konsumpcyjne cykliczne",
-    "Consumer Defensive": "Dobra konsumpcyjne defensywne",
-    "Industrials": "Przemysł",
-    "Basic Materials": "Surowce",
-    "Energy": "Energia",
-    "Utilities": "Usługi użyteczności publicznej",
-    "Financial Services": "Usługi finansowe",
-    "Real Estate": "Nieruchomości",
-    "Communication Services": "Usługi komunikacyjne",
-}
-INDUSTRY_MAP_PL = {
-    "Semiconductors": "Półprzewodniki",
-    "Software—Application": "Oprogramowanie — aplikacje",
-    "Biotechnology": "Biotechnologia",
-    "Medical Devices": "Urządzenia medyczne",
-    "Diagnostics & Research": "Diagnostyka i badania",
-    "Electronic Components": "Komponenty elektroniczne",
-    "Electronics & Computer Distribution": "Dystrybucja elektroniki i komputerów",
-    "Information Technology Services": "Usługi IT",
-    "Internet Content & Information": "Treści i informacje internetowe",
-}
-COUNTRY_MAP_PL = {
-    "United States": "Stany Zjednoczone",
-    "Canada": "Kanada",
-    "United Kingdom": "Wielka Brytania",
-    "Germany": "Niemcy",
-    "France": "Francja",
-    "Japan": "Japonia",
-    "China": "Chiny",
-    "Israel": "Izrael",
-    "Netherlands": "Niderlandy",
-}
-
-def _to_pl_label(en: Optional[str], mapping: Dict[str, str]) -> Optional[str]:
-    if not en: return en
-    return mapping.get(en, en)
-
-def _translate_summary_simple(text: Optional[str]) -> Optional[str]:
-    """Lekki, lokalny 'przekład': podstawienia prostych fraz + pozostawienie reszty po EN."""
-    if not text: return text
-    repl = {
-        "company": "spółka",
-        "provides": "świadczy",
-        "manufactures": "produkuje",
-        "develops": "rozwija",
-        "designs": "projektuje",
-        "and": "i",
-        "services": "usługi",
-        "products": "produkty",
-        "customers": "klienci",
-        "including": "w tym",
-        "solutions": "rozwiązania",
-        "software": "oprogramowanie",
-        "hardware": "sprzęt",
-        "cloud": "chmura",
-        "medical": "medyczne",
-        "devices": "urządzenia",
-        "distribution": "dystrybucja",
-        "electronics": "elektronika",
-    }
-    out = text
-    for k, v in repl.items():
-        out = out.replace(f" {k} ", f" {v} ")
-        out = out.replace(f" {k}.", f" {v}.")
-        out = out.replace(f" {k},", f" {v},")
-        out = out.replace(f" {k};", f" {v};")
-        out = out.replace(f" {k}:", f" {v}:")
-        # na początku zdania
-        if out.startswith(k + " "): out = out.replace(k + " ", v + " ", 1)
-    return out
-
-# ====== PODSUMOWANIE „JAK WCZEŚNIEJ” (+ dane z tabeli + opis PL) ======
+# ====== PODSUMOWANIE (oryginał EN, bez lokalizacji) ======
 def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: int):
     base_row = df_src[df_src["Ticker"] == sym]
     if base_row.empty:
@@ -623,24 +548,19 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     fn = fetch_fundamentals(sym)
     cur = fn.get("currency") or "USD"
 
-    # Lokalne tłumaczenia podstawowych atrybutów
-    sector_pl   = _to_pl_label(fn.get("sector"), SECTOR_MAP_PL)
-    industry_pl = _to_pl_label(fn.get("industry"), INDUSTRY_MAP_PL)
-    country_pl  = _to_pl_label(fn.get("country"), COUNTRY_MAP_PL)
-
+    # EN labels
     cap_txt = _fmt_money(fn.get("market_cap"), cur)
     title_bits = [
         sym,
         fn.get("long_name") or "",
-        f"• {industry_pl or fn.get('industry') or '—'}",
-        f"• {country_pl or fn.get('country') or '—'}",
+        f"• {fn.get('industry') or '—'}",
+        f"• {fn.get('country') or '—'}",
         f"• MC: {cap_txt}"
     ]
     st.markdown("**" + "  ".join([x for x in title_bits if x]) + f"  •  waluta: {cur}**")
 
     # === DANE Z TABELI ===
     st.markdown("##### Dane z tabeli")
-    # przygotowanie pełnego zestawu tak jak w tabeli listy
     short_pct = row.get("ShortPctFloat")
     mc_val = row.get("MarketCap")
     mc_b = (round(mc_val/1e9, 2) if (mc_val is not None) else None)
@@ -655,7 +575,6 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
         ("Short%", f"{short_pct:.2f}%" if short_pct is not None else "—"),
         ("MC (B USD)", f"{mc_b:.2f}" if mc_b is not None else "—"),
     ]
-    # render w 3 kolumnach
     c1, c2, c3 = st.columns(3)
     cols = [c1, c2, c3]
     for i, (label, val) in enumerate(grid):
@@ -671,13 +590,10 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     if snap:
         st.write(" · ".join(snap))
 
-    # opis spółki — PL (z fallbackiem do EN)
+    # opis spółki — oryginał EN
     if fn.get("long_business_summary"):
-        with st.expander("Czym zajmuje się spółka (po polsku)", expanded=False):
-            pl_txt = _translate_summary_simple(fn["long_business_summary"])
-            st.write(pl_txt or fn["long_business_summary"])
-            with st.expander("Pokaż oryginał (EN)", expanded=False):
-                st.write(fn["long_business_summary"])
+        with st.expander("Business summary (EN)", expanded=False):
+            st.write(fn["long_business_summary"])
 
     # proponowane wejścia
     reco = None
@@ -752,26 +668,21 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     # „Ryzyka / wady / uwagi” — proste reguły
     with st.expander("Ryzyka / wady / uwagi (automatyczne)", expanded=False):
         notes = []
-        # dystans do EMA200
         if dist_pct is not None and dist_pct > 12:
             notes.append("• **Daleko od EMA200** (>12%) → ryzyko pościgu.")
-        # ATR%
         atr_pct = None
         if df_full is not None and not df_full.empty:
-            last = df_full.iloc[-1]
-            if pd.notna(last.get("ATR")) and pd.notna(last.get("Close")) and float(last.get("Close"))>0:
-                atr_pct = float(last["ATR"])/float(last["Close"])*100.0
+            last2 = df_full.iloc[-1]
+            if pd.notna(last2.get("ATR")) and pd.notna(last2.get("Close")) and float(last2.get("Close"))>0:
+                atr_pct = float(last2["ATR"])/float(last2["Close"])*100.0
         if atr_pct is not None and atr_pct > 10:
             notes.append("• **Wysokie ATR%** (>10%) → podwyższona zmienność.")
-        # GAP
         if df_full is not None and not df_full.empty:
-            last = df_full.iloc[-1]
-            if pd.notna(last.get("GapUpPct")) and float(last["GapUpPct"]) > 8:
+            last2 = df_full.iloc[-1]
+            if pd.notna(last2.get("GapUpPct")) and float(last2["GapUpPct"]) > 8:
                 notes.append("• **Duży GAP UP** (>8%) → ryzyko domknięcia luki.")
-        # Płynność
         if row.get("AvgVolume") is not None and row["AvgVolume"] < 1_000_000:
             notes.append("• **Niska płynność** (AvgVolume < 1M) → gorsze wykonanie zleceń.")
-        # Short wysoki
         if row.get("ShortPctFloat") is not None and row["ShortPctFloat"] >= 20:
             notes.append("• **Wysoki Short float** (≥20%) → większa zmienność (możliwy squeeze).")
         if notes:
