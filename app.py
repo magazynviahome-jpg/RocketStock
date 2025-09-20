@@ -123,7 +123,7 @@ def compute_indicators(df: pd.DataFrame, vol_window: int) -> pd.DataFrame:
 def macd_bullish_cross_recent(df: pd.DataFrame, lookback: int) -> bool:
     macd = df["MACD"]; sig  = df["MACD_signal"]
     cross_up = (macd.shift(1) <= sig.shift(1)) & (macd > sig)
-    return bool(cross_up.tail(lookback).any())
+    return bool(cross_up.tail(lookback).any()))
 
 @st.cache_data(show_spinner=False)
 def get_stock_df(ticker: str, period: str, vol_window: int) -> Optional[pd.DataFrame]:
@@ -534,23 +534,133 @@ def compute_entries(df_full: pd.DataFrame) -> Tuple[Optional[float], Optional[fl
     entry_pullback = (float(base_ema) + 0.10*float(atr)) if pd.notna(base_ema) else None
     return (entry_breakout, entry_pullback)
 
-# ====== PODSUMOWANIE „JAK WCZEŚNIEJ” (z rozwijanymi sekcjami + opis spółki) ======
+# ====== LOKALIZACJA PL (prosty słowniczek + tłumaczenie opisów) ======
+SECTOR_MAP_PL = {
+    "Technology": "Technologie",
+    "Healthcare": "Ochrona zdrowia",
+    "Consumer Cyclical": "Dobra konsumpcyjne cykliczne",
+    "Consumer Defensive": "Dobra konsumpcyjne defensywne",
+    "Industrials": "Przemysł",
+    "Basic Materials": "Surowce",
+    "Energy": "Energia",
+    "Utilities": "Usługi użyteczności publicznej",
+    "Financial Services": "Usługi finansowe",
+    "Real Estate": "Nieruchomości",
+    "Communication Services": "Usługi komunikacyjne",
+}
+INDUSTRY_MAP_PL = {
+    "Semiconductors": "Półprzewodniki",
+    "Software—Application": "Oprogramowanie — aplikacje",
+    "Biotechnology": "Biotechnologia",
+    "Medical Devices": "Urządzenia medyczne",
+    "Diagnostics & Research": "Diagnostyka i badania",
+    "Electronic Components": "Komponenty elektroniczne",
+    "Electronics & Computer Distribution": "Dystrybucja elektroniki i komputerów",
+    "Information Technology Services": "Usługi IT",
+    "Internet Content & Information": "Treści i informacje internetowe",
+}
+COUNTRY_MAP_PL = {
+    "United States": "Stany Zjednoczone",
+    "Canada": "Kanada",
+    "United Kingdom": "Wielka Brytania",
+    "Germany": "Niemcy",
+    "France": "Francja",
+    "Japan": "Japonia",
+    "China": "Chiny",
+    "Israel": "Izrael",
+    "Netherlands": "Niderlandy",
+}
+
+def _to_pl_label(en: Optional[str], mapping: Dict[str, str]) -> Optional[str]:
+    if not en: return en
+    return mapping.get(en, en)
+
+def _translate_summary_simple(text: Optional[str]) -> Optional[str]:
+    """Lekki, lokalny 'przekład': podstawienia prostych fraz + pozostawienie reszty po EN."""
+    if not text: return text
+    repl = {
+        "company": "spółka",
+        "provides": "świadczy",
+        "manufactures": "produkuje",
+        "develops": "rozwija",
+        "designs": "projektuje",
+        "and": "i",
+        "services": "usługi",
+        "products": "produkty",
+        "customers": "klienci",
+        "including": "w tym",
+        "solutions": "rozwiązania",
+        "software": "oprogramowanie",
+        "hardware": "sprzęt",
+        "cloud": "chmura",
+        "medical": "medyczne",
+        "devices": "urządzenia",
+        "distribution": "dystrybucja",
+        "electronics": "elektronika",
+    }
+    out = text
+    for k, v in repl.items():
+        out = out.replace(f" {k} ", f" {v} ")
+        out = out.replace(f" {k}.", f" {v}.")
+        out = out.replace(f" {k},", f" {v},")
+        out = out.replace(f" {k};", f" {v};")
+        out = out.replace(f" {k}:", f" {v}:")
+        # na początku zdania
+        if out.startswith(k + " "): out = out.replace(k + " ", v + " ", 1)
+    return out
+
+# ====== PODSUMOWANIE „JAK WCZEŚNIEJ” (+ dane z tabeli + opis PL) ======
 def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: int):
     base_row = df_src[df_src["Ticker"] == sym]
     if base_row.empty:
         st.info("Brak danych do podsumowania."); return
     row = base_row.iloc[0]
     close = row.get("Close"); rsi=row.get("RSI"); ema=row.get("EMA200"); ema50=row.get("EMA50")
-    vr=row.get("VolRatio"); macd=None; sig=None  # w tabeli tych kolumn nie trzymamy
+    vr=row.get("VolRatio")
     dist_pct = _pct_from(close, ema)
     df_full = get_stock_df(sym, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
     entry_break, entry_pull = compute_entries(df_full)
     fn = fetch_fundamentals(sym)
     cur = fn.get("currency") or "USD"
 
+    # Lokalne tłumaczenia podstawowych atrybutów
+    sector_pl   = _to_pl_label(fn.get("sector"), SECTOR_MAP_PL)
+    industry_pl = _to_pl_label(fn.get("industry"), INDUSTRY_MAP_PL)
+    country_pl  = _to_pl_label(fn.get("country"), COUNTRY_MAP_PL)
+
     cap_txt = _fmt_money(fn.get("market_cap"), cur)
-    title_bits = [sym, fn.get("long_name") or "", f"• {fn.get('industry') or '—'}", f"• {fn.get('country') or '—'}", f"• MC: {cap_txt}"]
+    title_bits = [
+        sym,
+        fn.get("long_name") or "",
+        f"• {industry_pl or fn.get('industry') or '—'}",
+        f"• {country_pl or fn.get('country') or '—'}",
+        f"• MC: {cap_txt}"
+    ]
     st.markdown("**" + "  ".join([x for x in title_bits if x]) + f"  •  waluta: {cur}**")
+
+    # === DANE Z TABELI ===
+    st.markdown("##### Dane z tabeli")
+    # przygotowanie pełnego zestawu tak jak w tabeli listy
+    short_pct = row.get("ShortPctFloat")
+    mc_val = row.get("MarketCap")
+    mc_b = (round(mc_val/1e9, 2) if (mc_val is not None) else None)
+    grid = [
+        ("Ticker", sym),
+        ("Sygnał", row.get("Sygnał", "–")),
+        ("Close", f"{close:.2f}" if close is not None else "—"),
+        ("RSI", f"{rsi:.2f}" if rsi is not None else "—"),
+        ("EMA200", f"{ema:.2f}" if ema is not None else "—"),
+        ("VolRatio", f"{vr:.2f}" if vr is not None else "—"),
+        ("AvgVolume", f"{int(row.get('AvgVolume')):,}".replace(",", " ") if row.get("AvgVolume") is not None else "—"),
+        ("Short%", f"{short_pct:.2f}%" if short_pct is not None else "—"),
+        ("MC (B USD)", f"{mc_b:.2f}" if mc_b is not None else "—"),
+    ]
+    # render w 3 kolumnach
+    c1, c2, c3 = st.columns(3)
+    cols = [c1, c2, c3]
+    for i, (label, val) in enumerate(grid):
+        with cols[i % 3]:
+            st.write(f"**{label}:** {val}")
 
     # snapshot podstawowe
     snap = []
@@ -558,12 +668,16 @@ def render_summary_pro(sym: str, df_src: pd.DataFrame, rsi_min: int, rsi_max: in
     if pd.notna(rsi):   snap.append(f"RSI **{rsi:.1f}** (zakres {rsi_min}–{rsi_max})")
     if dist_pct is not None: snap.append(f"vs EMA200 **{dist_pct:.2f}%**")
     if pd.notna(vr):    snap.append(f"VR **{vr:.2f}**")
-    st.write(" · ".join(snap))
+    if snap:
+        st.write(" · ".join(snap))
 
-    # opis spółki (leniwie, z cache)
+    # opis spółki — PL (z fallbackiem do EN)
     if fn.get("long_business_summary"):
-        with st.expander("Czym zajmuje się spółka (opis z Yahoo)", expanded=False):
-            st.write(fn["long_business_summary"])
+        with st.expander("Czym zajmuje się spółka (po polsku)", expanded=False):
+            pl_txt = _translate_summary_simple(fn["long_business_summary"])
+            st.write(pl_txt or fn["long_business_summary"])
+            with st.expander("Pokaż oryginał (EN)", expanded=False):
+                st.write(fn["long_business_summary"])
 
     # proponowane wejścia
     reco = None
@@ -1026,159 +1140,6 @@ with tab_scan:
                     render_summary_pro(sym, st.session_state.get("scan_results_raw", pd.DataFrame()), rsi_min, rsi_max)
                 except Exception as e:
                     st.warning(f"Nie udało się zbudować Podsumowania: {e}")
-
-                # ===== DIAGNOZA POD PODSUMOWANIEM =====
-                st.markdown("---")
-                st.subheader("Uzyskaj wyjaśnienie, dlaczego dana spółka nie spełnia warunków")
-                def diagnose_ticker_against_filters(ticker: str) -> dict:
-                    out = {"error": None, "checks": [], "values": {}}
-                    try:
-                        t = (ticker or "").strip().upper()
-                        if not t:
-                            out["error"] = "Podaj ticker."
-                            return out
-                        df = get_stock_df(t, period=st.session_state.get("period","1y"), vol_window=st.session_state.get("vol_window",20))
-                        if df is None or df.empty:
-                            out["error"] = "Brak danych OHLCV dla tego tickera."
-                            return out
-                        last = df.iloc[-1]
-                        rsi_val = float(last.get("RSI")) if pd.notna(last.get("RSI")) else None
-                        close   = float(last.get("Close")) if pd.notna(last.get("Close")) else None
-                        ema200  = float(last.get("EMA200")) if pd.notna(last.get("EMA200")) else None
-                        avgv    = float(last.get("AvgVolume")) if pd.notna(last.get("AvgVolume")) else None
-                        vol     = float(last.get("Volume")) if pd.notna(last.get("Volume")) else None
-                        gapup   = float(last.get("GapUpPct")) if pd.notna(last.get("GapUpPct")) else None
-                        atr     = float(last.get("ATR")) if pd.notna(last.get("ATR")) else None
-                        room3m  = float(last.get("RoomToHighPct")) if pd.notna(last.get("RoomToHighPct")) else None
-                        vr_val = None
-                        if vol is not None and avgv and avgv>0:
-                            vr_val = vol / avgv
-                        def add_check(name, ok, explain, val=None):
-                            out["checks"].append((name, bool(ok), explain))
-                            if val is not None:
-                                out["values"][name] = val
-                        # RSI
-                        rsi_ok = (rsi_val is not None) and (rsi_min <= rsi_val <= rsi_max)
-                        add_check("RSI w przedziale", rsi_ok, f"{rsi_min}–{rsi_max}", rsi_val)
-                        # EMA200 + cap
-                        price_ok = True
-                        dist_pct_now = None
-                        if require_price_above_ema200:
-                            price_ok = (close is not None and ema200 is not None and ema200>0)
-                            if price_ok:
-                                dist_pct_now = (close/ema200 - 1.0)*100.0
-                                price_ok = (dist_pct_now >= 0.0) and (dist_pct_now <= float(ema_dist_cap))
-                        add_check("Close > EMA200 + cap", price_ok, f"0–{ema_dist_cap}%", dist_pct_now)
-                        # Min AvgVolume
-                        if f_minavg_on:
-                            mv_ok = (avgv is not None and avgv >= float(f_minavg_val))
-                            add_check("Min AvgVolume", mv_ok, f"≥ {int(f_minavg_val):,}".replace(",", " "), avgv)
-                        else:
-                            add_check("Min AvgVolume (wyłączony)", True, "—", avgv)
-                        # VR widełki
-                        if f_vr_on:
-                            vr_ok = (vr_val is not None and (float(f_vr_min) <= vr_val <= float(f_vr_max)))
-                            add_check("VolRatio w widełkach", vr_ok, f"{f_vr_min}–{f_vr_max}", vr_val)
-                        else:
-                            add_check("VolRatio (wyłączony)", True, "—", vr_val)
-                        # GAP
-                        if f_gap_on:
-                            gap_ok = (gapup is not None and gapup <= float(f_gap_max))
-                            add_check("GAP UP ≤ %", gap_ok, f"≤ {f_gap_max}%", gapup)
-                        else:
-                            add_check("GAP UP (wyłączony)", True, "—", gapup)
-                        # Min cena
-                        if f_minprice_on:
-                            price_min_ok = (close is not None and close >= float(f_minprice_val))
-                            add_check("Cena ≥ $", price_min_ok, f"≥ {f_minprice_val}", close)
-                        else:
-                            add_check("Min cena (wyłączony)", True, "—", close)
-                        # ATR%
-                        if f_atr_on:
-                            atr_pct_v = (atr/close*100.0) if (atr is not None and close and close>0) else None
-                            atr_ok = (atr_pct_v is not None and atr_pct_v <= float(f_atr_max))
-                            add_check("ATR% ≤", atr_ok, f"≤ {f_atr_max}%", atr_pct_v)
-                        else:
-                            add_check("ATR% (wyłączony)", True, "—", None)
-                        # HH&HL
-                        if f_hhhl_on and len(df) >= 3:
-                            hh = bool(pd.notna(df["HH3"].iloc[-1]) and df["HH3"].iloc[-1])
-                            hl = bool(pd.notna(df["HL3"].iloc[-1]) and df["HL3"].iloc[-1])
-                            add_check("HH & HL (3 świece)", (hh and hl), "oba muszą być True", f"HH={hh}, HL={hl}")
-                        elif f_hhhl_on:
-                            add_check("HH & HL (3 świece)", False, "za mało świec", None)
-                        else:
-                            add_check("HH & HL (wyłączony)", True, "—", None)
-                        # 3m high
-                        if f_resist_on:
-                            resist_ok = (room3m is not None and room3m >= float(f_resist_min))
-                            add_check("Odległość do 3m high", resist_ok, f"≥ {f_resist_min}%", room3m)
-                        else:
-                            add_check("3m high (wyłączony)", True, "—", room3m)
-                        # MACD
-                        macd_cross = macd_bullish_cross_recent(df, macd_lookback)
-                        if f_macd_on:
-                            add_check("MACD cross w lookback", macd_cross, f"ostatnie {macd_lookback} dni", macd_cross)
-                        else:
-                            add_check("MACD cross (wyłączony)", True, "—", macd_cross)
-                        # Potwierdzenie wolumenem
-                        vol_conf = vol_confirmation(vol, avgv)
-                        if f_volconfirm_on:
-                            add_check("Potwierdzenie wolumenem", vol_conf, "Volume > AvgVolume", f"VR={vr_val:.2f}" if vr_val is not None else None)
-                        else:
-                            add_check("Potwierdzenie wolumenem (wyłączone)", True, "—", f"VR={vr_val:.2f}" if vr_val is not None else None)
-                        # MC
-                        mc_val = get_market_cap_fast(t)
-                        if f_mcap_on:
-                            mc_ok = (mc_val is not None and float(f_mcap_min) <= mc_val <= float(f_mcap_max))
-                            add_check("MarketCap w widełkach", mc_ok, f"{int(f_mcap_min):,}–{int(f_mcap_max):,}".replace(",", " "), mc_val)
-                        else:
-                            add_check("MarketCap (wyłączony)", True, "—", mc_val)
-                        # Short float
-                        spf = get_short_percent_float(t)
-                        spf_pct = (spf*100.0) if spf is not None else None
-                        if f_short_on:
-                            short_ok = (spf_pct is not None and spf_pct >= float(f_short_min))
-                            add_check("Short float ≥ %", short_ok, f"≥ {f_short_min}%", spf_pct)
-                        else:
-                            add_check("Short float (wyłączony)", True, "—", spf_pct)
-                        return out
-                    except Exception as e:
-                        out["error"] = f"Błąd diagnozy: {e}"
-                        return out
-
-                col_diag1, col_diag2 = st.columns([2,1])
-                with col_diag1:
-                    diag_ticker = st.selectbox(
-                        "Wybierz spółkę do wyjaśnienia",
-                        ["—"] + df_view["Ticker"].dropna().astype(str).sort_values().unique().tolist(),
-                        index= (df_view["Ticker"].tolist().index(sym)+1) if sym in df_view["Ticker"].tolist() else 0,
-                        key="diag_selectbox_symbol"
-                    )
-                with col_diag2:
-                    run_diag = st.button("Wyjaśnij", key="diag_btn", use_container_width=True)
-
-                if run_diag and diag_ticker and diag_ticker != "—":
-                    res = diagnose_ticker_against_filters(diag_ticker)
-                    if res.get("error"):
-                        st.error(res["error"])
-                    else:
-                        passed_all = True
-                        for name, ok, explain in res["checks"]:
-                            passed_all = passed_all and ok
-                            prefix = "✅" if ok else "❌"
-                            val = res["values"].get(name, None)
-                            if isinstance(val, float):
-                                disp = f"{val:.2f}"
-                            else:
-                                disp = str(val) if val is not None else "—"
-                            st.write(f"{prefix} **{name}** — {explain}  ·  wartość: `{disp}`")
-
-                        st.markdown("---")
-                        if passed_all:
-                            st.success(f"Ticker **{diag_ticker}** spełnia wszystkie twarde filtry.")
-                        else:
-                            st.warning(f"Ticker **{diag_ticker}** **NIE** spełnia wszystkich twardych filtrów (patrz ❌ powyżej).")
 
     else:
         if st.session_state.get("scan_done"):
